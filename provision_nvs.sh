@@ -24,7 +24,7 @@ echo "chip_id   : $CHIP_ID"
 echo "device_id : $DEVICE_ID"
 
 # 2. Read fw_version from CMakeLists.txt
-FW_VERSION=$(grep "project(homepi_sensor VERSION" "$SENSOR_DIR/CMakeLists.txt" | grep -oP '\d+\.\d+\.\d+' | tr -d '\r\n')
+FW_VERSION=$(cd "$SENSOR_DIR" && git describe --always --tags --dirty 2>/dev/null || echo "unknown")
 echo "fw_version: $FW_VERSION"
 
 HW_MODEL="esp32c3"
