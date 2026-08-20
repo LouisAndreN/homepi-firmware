@@ -14,6 +14,10 @@
 #include <stdio.h>
 
 
+// Manage all configurations of known sensors
+// New sensors will be added here
+
+
 static const char *TAG = "sensors";
 
 
