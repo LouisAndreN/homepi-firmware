@@ -407,6 +407,14 @@ void notify_api_enrolled(const char *device_id, const char *ldevid_pem)
     cJSON_AddStringToObject(body, "hw_model",         hw_model[0] ? hw_model : "unknown"); // ← SEUL AJOUT
     cJSON_AddStringToObject(body, "cert_fingerprint", fp_hex);
     cJSON_AddStringToObject(body, "cert_expiry",      expiry);
+    
+    #ifdef CONFIG_IDF_TARGET_ESP32S3
+        cJSON_AddStringToObject(body, "chip_target", "esp32s3");
+    #elif CONFIG_IDF_TARGET_ESP32C3
+        cJSON_AddStringToObject(body, "chip_target", "esp32c3");
+    #else
+        cJSON_AddStringToObject(body, "chip_target", "esp32");
+    #endif
 
     // capabilities depuis NVS — inchangé
     char caps_csv[256] = {0};

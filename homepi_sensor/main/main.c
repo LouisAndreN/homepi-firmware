@@ -131,7 +131,11 @@ static void homepi_main_task(void *arg)
     // (ex: "esp32c3" générique depuis generate_nvs.py, ou vide), jamais la
     // vraie combinaison de capteurs détectés — d'où hw_model incorrect ou
     // vide dans devices.db malgré un enrollment par ailleurs réussi.
-    ESP_ERROR_CHECK(sensors_init());
+    // ESP_ERROR_CHECK(sensors_init());
+    esp_err_t sensors_ret = sensors_init();
+    if (sensors_ret != ESP_OK) {
+        ESP_LOGW(TAG, "No sensor detected at boot (%s) — device pursue anyway", esp_err_to_name(sensors_ret));
+    }
 
     // ── Enrollment ────────────────────────────────────────────
     uint8_t enrolled = 0;

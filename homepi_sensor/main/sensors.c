@@ -105,7 +105,9 @@ static esp_err_t sps30_read(sensor_data_t *out)
     float pm1, pm25, pm4, pm10;
     esp_err_t ret = sps30_measure(&pm1, &pm25, &pm4, &pm10);
     out->sps30_ok = (ret == ESP_OK);
-    if (ret == ESP_OK) {
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "SPS30 read failed: %s", esp_err_to_name(ret));
+    } else {
         out->pm1_0 = pm1;
         out->pm2_5 = pm25;
         out->pm4_0 = pm4;
@@ -613,8 +615,8 @@ static esp_err_t sps30_send_cmd16(uint16_t cmd)
 static esp_err_t sps30_init(void)
 {
     // Wake-up (au cas où en veille) — ignore l'erreur, pas toujours nécessaire
-    sps30_send_cmd16(0x1103);
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // sps30_send_cmd16(0x1103);
+    // vTaskDelay(pdMS_TO_TICKS(5));
 
     // Start measurement — 0x0010, arg 0x0300 (float output), CRC de l'arg
     uint8_t buf[5] = { 0x00, 0x10, 0x03, 0x00, 0x00 };
@@ -644,19 +646,31 @@ static esp_err_t sps30_measure(float *pm1_0, float *pm2_5, float *pm4_0, float *
 {
     if (!s_sps30_ready) return ESP_ERR_INVALID_STATE;
 
-    // Read data-ready flag (0x0202) avant de lire — évite de lire une trame périmée
+    // Read data-ready flag (0x0202) avec retry — le SPS30 peut prendre
+    // quelques secondes après start_measurement avant sa première trame valide
     uint8_t rcmd[2] = {0x02, 0x02};
     uint8_t rdy[3];
-    esp_err_t ret = i2c_write_read(I2C_SPS30_ADDR, rcmd, 2, rdy, 3);
-    if (ret != ESP_OK) return ret;
-    if (scd41_crc8(&rdy[0], 2) != rdy[2]) return ESP_ERR_INVALID_CRC;
-    if (rdy[1] == 0) return ESP_ERR_NOT_FINISHED; // pas encore de nouvelle donnée
+    int retries = 10; // ~1s max (10 x 100ms)
+    bool data_ready = false;
+    while (retries-- > 0) {
+        esp_err_t ret = i2c_write_read(I2C_SPS30_ADDR, rcmd, 2, rdy, 3);
+        if (ret != ESP_OK) return ret;
+        if (scd41_crc8(&rdy[0], 2) != rdy[2]) return ESP_ERR_INVALID_CRC;
+        if (rdy[1] != 0) { data_ready = true; break; }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!data_ready) return ESP_ERR_NOT_FINISHED;
 
     // Read measured values (0x0300) — 60 bytes = 10 floats × (4 data + 2 CRC)
     uint8_t cmd[2] = {0x03, 0x00};
     uint8_t data[60];
-    ret = i2c_write_read(I2C_SPS30_ADDR, cmd, 2, data, 60);
+    esp_err_t ret = i2c_write_read(I2C_SPS30_ADDR, cmd, 2, data, 60);
     if (ret != ESP_OK) return ret;
+
+    // DEBUG temporaire — à retirer une fois le problème résolu
+    ESP_LOGI(TAG, "SPS30 raw: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+         data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8]);
+
 
     // Vérifier les 10 CRC (un tous les 3 octets : 2 data + 1 crc, ×2 mots par float)
     for (int i = 0; i < 60; i += 3) {

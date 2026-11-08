@@ -1,0 +1,7 @@
+# gitleaks configuration for homepi-firmware: the default rules, plus one documented allowance.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "ESP-IDF public default OpenThread network key (CONFIG_OPENTHREAD_NETWORK_MASTERKEY); OpenThread is not used by HomePi"
+regexes = ['''^00112233445566778899aabbccddeeff$''']

@@ -1,0 +1,36 @@
+# sdkconfig.defaults
+CONFIG_IDF_TARGET="esp32c3"
+
+# Flash 4MB (Xiao ESP32-C3)
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ── Console ────────────────────────────────────────────────────
+# UART comme console primaire (fonctionne avec ou sans USB host)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# USB-JTAG en secondaire (idf.py monitor continue à marcher sur PC)
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# TLS / mbedTLS
+CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=8192
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+CONFIG_ESP_TLS_INSECURE=n
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=n
+
+# MQTT
+CONFIG_MQTT_BUFFER_SIZE=4096
+
+# NTP
+CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
+
+# OTA
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=n
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y   # rollback automatique si nouveau fw ne s'auto-valide pas
+CONFIG_MBEDTLS_SHA256_C=y                 # pour vérification SHA256
+
+# Logs
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Watchdog
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30

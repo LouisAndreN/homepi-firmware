@@ -14,3 +14,14 @@ nvs_config.csv
 nvs_generated.csv
 nvs_generated.bin
 main/nvs_config.csv
+.vscode/
+*.log
+__pycache__/
+*nvs*.csv
+!partitions.csv
+*nvs*.bin
+*.key
+*.pem
+*.crt
+*.der
+devices/

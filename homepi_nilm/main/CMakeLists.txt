@@ -1,0 +1,24 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "nvs_manager.c"
+        "led.c"
+        "ntp_sync.c"
+        "enrollment.c"
+        "mqtt_app.c"
+        "nilm_bridge.c"
+        "ota.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_http_client
+        esp_https_ota
+        mqtt
+        mbedtls
+        driver
+        json
+        esp_timer
+        lwip
+        app_update
+)
