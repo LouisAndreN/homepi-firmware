@@ -1,10 +1,8 @@
 idf_component_register(
     SRCS
         "main.c"
-        "nvs_manager.c"
         "led.c"
         "ntp_sync.c"
-        "enrollment.c"
         "mqtt_app.c"
         "nilm_bridge.c"
         "ota.c"
@@ -21,4 +19,5 @@ idf_component_register(
         esp_timer
         lwip
         app_update
+        homepi_identity
 )

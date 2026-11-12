@@ -26,8 +26,8 @@ CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
 
 # OTA
 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=n
-CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y   # rollback automatique si nouveau fw ne s'auto-valide pas
-CONFIG_MBEDTLS_SHA256_C=y                 # pour vérification SHA256
+# Rollback: an image that never confirms itself is reverted (no inline comment: it voids the value)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Logs
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -3,7 +3,9 @@
 #include "config.h"
 #include "nvs_manager.h"
 #include "led.h"
-#include "enrollment.h"
+#include "homepi_identity.h"
+#include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "sensors.h"
 #include "ota.h"
 #include "esp_log.h"
@@ -22,8 +24,6 @@ static char s_topic_sensors[128]  = {0};
 static char s_topic_status[128]   = {0};
 static char s_topic_commands[128] = {0};
 
-static int  s_disconnect_count  = 0;
-#define MAX_DISCONNECTS_BEFORE_REENROLL  3
 
 // ── Handlers commandes MQTT ───────────────────────────────────
 
@@ -95,16 +95,18 @@ static void handle_ota(cJSON *cmd)
 
 static void handle_renew_cert(void)
 {
-    ESP_LOGI(TAG, "Cert renewal requested via MQTT");
-    esp_err_t ret = enrollment_check_renewal();
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Cert renewed — reconnecting MQTT");
-        esp_mqtt_client_stop(mqtt_handle);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_mqtt_client_start(mqtt_handle);
-    } else {
-        ESP_LOGE(TAG, "Cert renewal failed: %s", esp_err_to_name(ret));
+    // Forced renewal (operator test): register the new certificate, then restart so that the MQTT
+    // client loads it (its TLS configuration holds the certificate read at start)
+    ESP_LOGI(TAG, "LDevID renewal requested via MQTT");
+    bool renewed = false;
+    esp_err_t ret = hid_renew_if_due(true, &renewed);
+    if (ret == ESP_OK && renewed) {
+        hid_register(NULL);
+        ESP_LOGI(TAG, "LDevID renewed: restarting to reconnect with it");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
     }
+    ESP_LOGE(TAG, "LDevID renewal failed: %s", esp_err_to_name(ret));
 }
 
 static void handle_update_wifi(cJSON *cmd)
@@ -191,7 +193,15 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
 
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "Connected to broker");
-            s_disconnect_count = 0;
+            // A new image has now proven Wi-Fi, NTP, its LDevID and the broker: keep it
+            {
+                esp_ota_img_states_t st;
+                if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+                    st == ESP_OTA_IMG_PENDING_VERIFY) {
+                    esp_ota_mark_app_valid_cancel_rollback();
+                    ESP_LOGI(TAG, "New firmware confirmed after the first broker connection");
+                }
+            }
             led_set(LED_OPERATIONAL);
 
             // S'abonner aux commandes (QoS 1)
@@ -209,16 +219,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
         case MQTT_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "Disconnected from broker");
             led_set(LED_ERROR);
-            s_disconnect_count++;
-
-            if (s_disconnect_count >= MAX_DISCONNECTS_BEFORE_REENROLL) {
-                // Le broker a peut-être rejeté le LDevID (révocation ACL)
-                ESP_LOGE(TAG, "%d disconnects — clearing enrolled flag",
-                         s_disconnect_count);
-                nvs_mgr_set_u8(NVS_KEY_ENROLLED, 0);
-                vTaskDelay(pdMS_TO_TICKS(2000));
-                esp_restart();
-            }
+            // No re-enrollment here (v2.4.0): an outage is not a revocation; ESP-MQTT reconnects
             // esp_mqtt_client gère la reconnexion automatiquement
             break;
 
@@ -241,8 +242,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             ESP_LOGE(TAG, "MQTT error");
             if (event->error_handle->error_type ==
                     MQTT_ERROR_TYPE_TCP_TRANSPORT) {
-                ESP_LOGE(TAG, "TLS error — check LDevID validity");
-                // Cert expiré ou révoqué → re-enrollment
+                ESP_LOGE(TAG, "TLS or TCP error (broker down, or LDevID refused)");
             }
             break;
 
@@ -262,7 +262,7 @@ esp_err_t mqtt_app_start(void)
 {
     // Charger les credentials depuis NVS
     static char root_ca[4096]    = {0};
-    static char ldevid_cert[2048]= {0};
+    static char ldevid_cert[3072]= {0};   // LDevID chain (v2.4.0)
     static char ldevid_key[2048] = {0};
     static char lwt_payload[128] = {0};
 

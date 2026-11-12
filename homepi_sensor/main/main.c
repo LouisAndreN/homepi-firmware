@@ -3,7 +3,8 @@
 #include "nvs_manager.h"
 #include "led.h"
 #include "ntp_sync.h"
-#include "enrollment.h"
+#include "homepi_identity.h"
+#include "esp_timer.h"
 #include "mqtt_app.h"
 #include "sensors.h"
 #include "config.h"
@@ -20,6 +21,23 @@
 static const char *TAG = "main";
 static EventGroupHandle_t wifi_events;
 #define WIFI_CONNECTED_BIT BIT0
+
+// A new image must reach the broker within this delay, or the device restarts and the bootloader
+// goes back to the previous image (rollback enabled since v2.4.0)
+#define OTA_CONFIRM_DEADLINE_US   (10LL * 60 * 1000000)
+#define IDENTITY_CHECK_PERIOD_US  (24LL * 3600 * 1000000)
+
+void hid_on_event(hid_event_t event)
+{
+    led_set(event == HID_EVENT_FAILED ? LED_ERROR : LED_ZERO_TOUCH);
+}
+
+static bool ota_pending_verify(void)
+{
+    esp_ota_img_states_t state;
+    return esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
+           state == ESP_OTA_IMG_PENDING_VERIFY;
+}
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                 int32_t event_id, void *event_data)
@@ -83,7 +101,7 @@ static void homepi_main_task(void *arg)
     ESP_LOGI(TAG, "Reset reason: %d", reason);
     // 1=POWERON, 3=SW, 4=PANIC, 6=TASK_WDT, 7=INT_WDT, 9=BROWNOUT
 
-    esp_ota_mark_app_valid_cancel_rollback();
+    // The image is confirmed in mqtt_app.c on the first broker connection, not here
     ESP_LOGI(TAG, "HomePi ESP32 v%s boot", esp_app_get_description()->version);
 
     // ── Init ───────────────────────────────────────────────────
@@ -137,24 +155,26 @@ static void homepi_main_task(void *arg)
         ESP_LOGW(TAG, "No sensor detected at boot (%s) — device pursue anyway", esp_err_to_name(sensors_ret));
     }
 
-    // ── Enrollment ────────────────────────────────────────────
-    uint8_t enrolled = 0;
-    nvs_mgr_get_u8(NVS_KEY_ENROLLED, &enrolled);
-    if (!enrolled) {
-        ESP_LOGI(TAG, "Not enrolled — trying zero-touch X5C");
-        led_set(LED_ZERO_TOUCH);
-
-        if (enrollment_zero_touch() != ESP_OK) {
-            ESP_LOGW(TAG, "Zero-touch failed — fallback");
-            led_set(LED_FALLBACK_WAIT);
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            enrollment_fallback();
+    // ── Identity (homepi_identity, v2.4.0) ────────────────────
+    // Enrollment happens only without a usable LDevID (first boot, or expired after a long time
+    // offline): a broker outage or a refused connection never re-enrolls any more.
+    if (!hid_ldevid_usable()) {
+        ESP_LOGI(TAG, "No usable LDevID: enrolling with the IDevID");
+        if (hid_enroll() == ESP_OK) {
+            ESP_LOGI(TAG, "LDevID stored: restarting");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
         }
-        ESP_LOGE(TAG, "Enrollment failed — deep sleep 120s");
+        ESP_LOGE(TAG, "Enrollment failed: deep sleep 120 s");
         led_set(LED_ERROR);
         vTaskDelay(pdMS_TO_TICKS(2000));
         esp_deep_sleep(120 * 1000000ULL);
     }
+    bool renewed = false;
+    hid_renew_if_due(false, &renewed);
+    // Tell the registry which LDevID this device holds. Refused while the device is not
+    // pre-announced or approved: it keeps running, the operator decides.
+    hid_register(NULL);
 
     // ── MQTT mTLS ─────────────────────────────────────────────
     ESP_LOGI(TAG, "Enrolled — starting MQTT mTLS");
@@ -167,7 +187,7 @@ static void homepi_main_task(void *arg)
 
     // ── Boucle principale ─────────────────────────────────────
     TickType_t last_publish = xTaskGetTickCount();
-    time_t     last_renewal_check = 0;
+    int64_t last_identity_check = esp_timer_get_time();
 
     while (1) {
         TickType_t now = xTaskGetTickCount();
@@ -176,13 +196,21 @@ static void homepi_main_task(void *arg)
             last_publish = now;
         }
 
-        // Cert renewal check — une fois par jour entre 03:00 et 03:05
-        time_t now_ts = time(NULL);
-        struct tm t; localtime_r(&now_ts, &t);
-        if (t.tm_hour == 3 && t.tm_min < 5 &&
-            (now_ts - last_renewal_check) > 86400) {
-            enrollment_check_renewal();
-            last_renewal_check = now_ts;
+        // LDevID renewal check once a day; the renewal itself happens when fewer than 30 days are left.
+        // A renewed certificate is registered, then the device restarts to reconnect MQTT with it.
+        if (esp_timer_get_time() - last_identity_check >= IDENTITY_CHECK_PERIOD_US) {
+            last_identity_check = esp_timer_get_time();
+            bool renewed_now = false;
+            if (hid_renew_if_due(false, &renewed_now) == ESP_OK && renewed_now) {
+                hid_register(NULL);
+                esp_restart();
+            }
+        }
+
+        // A new image that never reached the broker is reverted by the bootloader after this restart
+        if (ota_pending_verify() && esp_timer_get_time() > OTA_CONFIRM_DEADLINE_US) {
+            ESP_LOGE(TAG, "New firmware not confirmed within 10 minutes: restarting into the previous one");
+            esp_restart();
         }
 
 

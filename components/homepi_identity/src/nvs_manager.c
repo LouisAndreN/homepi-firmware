@@ -1,6 +1,6 @@
-// main/nvs_manager.c
+// components/homepi_identity/src/nvs_manager.c (shared by the sensor, LED and NILM firmware since v2.4.0)
 #include "nvs_manager.h"
-#include "config.h"
+#include "identity_config.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
