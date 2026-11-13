@@ -22,6 +22,7 @@
 #define NVS_NS_CONFIG           "config"
 #define NVS_NS_CERTS            "certs"
 #define NVS_KEY_DEVICE_ID       "device_id"
+#define NVS_KEY_RENEW_REQUEST   "renew_req"     // u8, set by hid_schedule_renewal()
 #define NVS_KEY_ROOT_CA         "root_ca"
 #define NVS_KEY_IDEVID_CERT     "idevid_cert"
 #define NVS_KEY_IDEVID_KEY      "idevid_key"

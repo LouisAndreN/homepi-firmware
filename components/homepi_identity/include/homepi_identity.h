@@ -16,6 +16,10 @@
 //      pre-announced devices become active, unknown ones wait for an operator.
 //   3. hid_renew_if_due() renews the LDevID directly with step-ca (/step/renew) when less than
 //      30 days are left, with a token signed by the current LDevID key: same key, new certificate.
+//      It runs at boot only, before MQTT starts: an ESP32-C3 cannot hold a second TLS session next
+//      to the MQTT one (mbedtls_ssl_setup fails with MBEDTLS_ERR_SSL_ALLOC_FAILED, seen on the
+//      v2.4.0-rc1 canary). At run time the application asks for a renewal with
+//      hid_schedule_renewal() and restarts.
 //
 // The stored LDevID is the chain step-ca returns (leaf, then intermediate): renewal tokens must carry
 // the intermediate, and an LDevID stored by v2.3.x (leaf only) gets it from /step/intermediates.pem.
@@ -58,9 +62,16 @@ esp_err_t hid_enroll(void);
 // ESP_ERR_NOT_ALLOWED when it refuses (pending or suspended); ESP_FAIL on transport errors.
 esp_err_t hid_register(const hid_profile_t *profile);
 
-// Renewal with step-ca when fewer than 30 days are left (force=true renews now, for tests).
-// Sets *renewed; on success the caller re-registers and reconnects MQTT with the new certificate.
+// Renewal with step-ca when fewer than 30 days are left, or when hid_schedule_renewal() asked for
+// one (force=true renews now). Call it at boot, before MQTT starts. Sets *renewed; on success the
+// caller re-registers, and MQTT then starts with the new certificate.
 esp_err_t hid_renew_if_due(bool force, bool *renewed);
+
+// True when fewer than 30 days are left (false before NTP or without an LDevID).
+bool hid_renewal_due(void);
+
+// Asks for a renewal at the next boot (NVS flag, consumed by hid_renew_if_due). The caller restarts.
+esp_err_t hid_schedule_renewal(void);
 
 #ifdef __cplusplus
 }

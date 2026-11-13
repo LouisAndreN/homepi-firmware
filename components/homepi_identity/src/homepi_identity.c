@@ -11,6 +11,7 @@
 
 #include "cJSON.h"
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -102,10 +103,20 @@ static esp_err_t http_on_event(esp_http_client_event_t *evt)
 }
 
 // POST with an optional bearer token and an optional client certificate (mTLS through nginx)
+// A TLS session needs tens of kB of heap: logged before each request, so that an
+// MBEDTLS_ERR_SSL_ALLOC_FAILED in the log comes with the numbers that explain it
+static void log_heap(const char *url)
+{
+    ESP_LOGI(TAG, "HTTPS %s: free heap %u B, largest block %u B", url,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
+
 static esp_err_t http_post(const char *url, const char *root_ca, const char *bearer,
                            const char *client_cert, const char *client_key,
                            const char *body, char *resp, size_t resp_cap, int *status)
 {
+    log_heap(url);
     http_resp_t r = { .buf = resp, .len = 0, .cap = resp_cap };
     resp[0] = '\0';
     esp_http_client_config_t cfg = {
@@ -137,6 +148,7 @@ static esp_err_t http_post(const char *url, const char *root_ca, const char *bea
 
 static esp_err_t http_get(const char *url, const char *root_ca, char *resp, size_t resp_cap)
 {
+    log_heap(url);
     http_resp_t r = { .buf = resp, .len = 0, .cap = resp_cap };
     resp[0] = '\0';
     esp_http_client_config_t cfg = {
@@ -471,6 +483,13 @@ esp_err_t hid_renew_if_due(bool force, bool *renewed)
     int days = 0;
     esp_err_t ret = hid_ldevid_days_left(&days);
     if (ret != ESP_OK) return ret;   // no LDevID, or clock not set yet
+    uint8_t requested = 0;
+    if (nvs_mgr_get_u8(NVS_KEY_RENEW_REQUEST, &requested) == ESP_OK && requested) {
+        // Consumed before the attempt: a failed renewal never turns into a boot loop
+        nvs_mgr_set_u8(NVS_KEY_RENEW_REQUEST, 0);
+        ESP_LOGI(TAG, "Renewal requested before the restart");
+        force = true;
+    }
     if (!force && days > HID_RENEW_DAYS_BEFORE) {
         ESP_LOGI(TAG, "LDevID valid for %d more days, no renewal", days);
         return ESP_OK;
@@ -503,7 +522,7 @@ esp_err_t hid_renew_if_due(bool force, bool *renewed)
     snprintf(payload, sizeof(payload),
              "{\"sub\":\"%s\",\"iss\":\"" HID_RENEW_ISSUER "\",\"aud\":\"" HID_RENEW_AUDIENCE "\","
              "\"iat\":%lld,\"nbf\":%lld,\"exp\":%lld,\"jti\":\"%s\"}",
-             device_id, (long long)now, (long long)now, (long long)now + 300, jti);
+             device_id, (long long)now, (long long)now - 60, (long long)now + 300, jti);   // nbf: 60 s of clock skew
     ret = sign_jwt("x5cInsecure", cert, key, payload, jwt, sizeof(jwt));
     if (ret != ESP_OK) goto done;
     int status = 0;
@@ -525,4 +544,15 @@ done:
     memset(key, 0, sizeof(key));
     hid_on_event(HID_EVENT_FAILED);
     return ret;
+}
+
+bool hid_renewal_due(void)
+{
+    int days = 0;
+    return hid_ldevid_days_left(&days) == ESP_OK && days <= HID_RENEW_DAYS_BEFORE;
+}
+
+esp_err_t hid_schedule_renewal(void)
+{
+    return nvs_mgr_set_u8(NVS_KEY_RENEW_REQUEST, 1);
 }

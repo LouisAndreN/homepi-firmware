@@ -102,7 +102,7 @@ static void homepi_main_task(void *arg)
     // 1=POWERON, 3=SW, 4=PANIC, 6=TASK_WDT, 7=INT_WDT, 9=BROWNOUT
 
     // The image is confirmed in mqtt_app.c on the first broker connection, not here
-    ESP_LOGI(TAG, "HomePi ESP32 v%s boot", esp_app_get_description()->version);
+    ESP_LOGI(TAG, "HomePi ESP32 %s boot", esp_app_get_description()->version);
 
     // ── Init ───────────────────────────────────────────────────
     led_init();
@@ -196,13 +196,13 @@ static void homepi_main_task(void *arg)
             last_publish = now;
         }
 
-        // LDevID renewal check once a day; the renewal itself happens when fewer than 30 days are left.
-        // A renewed certificate is registered, then the device restarts to reconnect MQTT with it.
+        // LDevID check once a day. The renewal itself runs at boot, before MQTT starts (no heap for
+        // a second TLS session next to it): when fewer than 30 days are left, restart to renew.
         if (esp_timer_get_time() - last_identity_check >= IDENTITY_CHECK_PERIOD_US) {
             last_identity_check = esp_timer_get_time();
-            bool renewed_now = false;
-            if (hid_renew_if_due(false, &renewed_now) == ESP_OK && renewed_now) {
-                hid_register(NULL);
+            if (hid_renewal_due() && hid_schedule_renewal() == ESP_OK) {
+                ESP_LOGI(TAG, "LDevID renewal due: restarting to renew before MQTT");
+                vTaskDelay(pdMS_TO_TICKS(500));
                 esp_restart();
             }
         }

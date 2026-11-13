@@ -74,18 +74,16 @@ static void handle_ota(cJSON *cmd)
 
 static void handle_renew_cert(void)
 {
-    // Forced renewal (operator test): register the new certificate, then restart so that the MQTT
-    // client loads it (its TLS configuration holds the certificate read at start)
-    ESP_LOGI(TAG, "LDevID renewal requested via MQTT");
-    bool renewed = false;
-    esp_err_t ret = hid_renew_if_due(true, &renewed);
-    if (ret == ESP_OK && renewed) {
-        hid_register(NULL);
-        ESP_LOGI(TAG, "LDevID renewed: restarting to reconnect with it");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_restart();
+    // Forced renewal (operator test). The renewal itself runs at the next boot, before MQTT starts:
+    // a second TLS session next to the MQTT one does not fit in the heap.
+    ESP_LOGI(TAG, "LDevID renewal requested via MQTT: renewing at the next boot");
+    esp_err_t ret = hid_schedule_renewal();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Cannot schedule the renewal: %s", esp_err_to_name(ret));
+        return;
     }
-    ESP_LOGE(TAG, "LDevID renewal failed: %s", esp_err_to_name(ret));
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
 }
 
 static void handle_update_wifi(cJSON *cmd)
