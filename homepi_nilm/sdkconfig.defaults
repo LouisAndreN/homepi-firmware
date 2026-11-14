@@ -1,7 +1,7 @@
 # sdkconfig.defaults
-CONFIG_IDF_TARGET="esp32c3"
+CONFIG_IDF_TARGET="esp32s3"
 
-# Flash 4MB (Xiao ESP32-C3)
+# Flash 4MB (XIAO ESP32-S3: kept at 4MB, the layout the deployed devices already have)
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

@@ -1,0 +1,11 @@
+# HomePi fleet manifest: which firmware project each device runs.
+# Declared here, never guessed from the device: a device running the wrong image would report the
+# wrong hw_model, and inference would keep it wrong. tools/usb-flash.sh checks the chip against it.
+# device_id,project,chip,notes
+esp32-819fe250,homepi_sensor,ESP32-C3,canary 1 (v2.4.0-rc2)
+esp32-b2615fe4,homepi_sensor,ESP32-C3,canary 2 (v2.4.0-rc2)
+esp32-0a171a18,homepi_sensor,ESP32-C3,
+esp32-819ff7b8,homepi_sensor,ESP32-C3,
+esp32-b26247a4,homepi_sensor,ESP32-C3,
+esp32-d45ca3e4,homepi_led,ESP32-S3,LED strip
+esp32-690be854,homepi_nilm,ESP32-S3,NILM bridge (in development)
