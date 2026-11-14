@@ -26,6 +26,9 @@ git -C "$REPO" tag -v "$TAG" > /dev/null 2>&1 || stop "$TAG is missing or its si
 echo "  $TAG verified on $(git -C "$REPO" rev-parse --short "$TAG^{commit}")"
 
 echo "=== 2. device on USB"
+# Certificates issued from here on (and in the 15 minutes before: the previous firmware may have
+# re-enrolled while the device was being plugged in) count against the verdict
+T0=$(( $(date +%s) - 900 ))
 PORT=""
 for c in /dev/ttyACM* /dev/ttyUSB*; do [ -e "$c" ] && PORT=$c && break; done
 [ -n "$PORT" ] || stop "no serial port (plug the device in, then usbipd attach)"
@@ -72,7 +75,6 @@ grep -q 'CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE 1' "$B/config/sdkconfig.h" || sto
 echo "  $PROJECT $VER for $TARGET, rollback compiled in"
 
 echo "=== 4. flash (NVS untouched) and boot log 120 s"
-T0=$(date +%s)
 idf.py -C "$WT/$PROJECT" -B "$B" -p "$PORT" flash > "$LOG/flash.log" 2>&1 \
   || { tail -5 "$LOG/flash.log"; stop "flash failed (full log: $LOG/flash.log)"; }
 echo "  verified regions: $(grep -c 'Hash of data verified' "$LOG/flash.log")"
@@ -97,11 +99,15 @@ Q() { sqlite3 -readonly "file:/var/lib/homepi/devices.db?mode=ro" "$1"; }
 echo "  registry after: $(Q "SELECT status || '|' || fw_version || '|' || ifnull(hw_model,'-') || '|' || substr(ifnull(cert_fingerprint,'-'),1,16) || '|exp=' || ifnull(cert_expiry,'-') FROM devices WHERE device_id='$DEV';")"
 J=$(journalctl -u step-ca --since @"$T0" --no-pager -o cat)
 S=$(echo "$J" | grep -c path=/1.0/sign); R=$(echo "$J" | grep -c path=/1.0/renew)
-echo "  step-ca since the flash: sign $S, renew $R"
+echo "  step-ca since 15 min before the device was plugged in: sign $S, renew $R"
 Q "SELECT '  audit: ' || ts || ' ' || event || ' ' || substr(detail,1,90) FROM audit_log WHERE device_id='$DEV' AND ts >= strftime('%Y-%m-%dT%H:%M:%SZ',$T0,'unixepoch') ORDER BY id;"
-if [ "$S" = 0 ] && [ "$R" = 0 ]; then
+# The LDevID lives 365 days: an expiry less than 364 days away means it was issued in the last day
+EXP=$(Q "SELECT cert_expiry FROM devices WHERE device_id='$DEV';")
+AGE_H=$(( ( $(date +%s) - ( $(date -d "$EXP" +%s) - 365 * 86400 ) ) / 3600 ))
+[ "$AGE_H" -lt 24 ] && echo "  WARNING: the certificate in use was issued ${AGE_H} h ago (expiry $EXP): a recent re-enrollment"
+if [ "$S" = 0 ] && [ "$R" = 0 ] && [ "$AGE_H" -ge 24 ]; then
   echo "  VERDICT: OK, no new certificate (a fingerprint change only corrects a stale v2.3.x registry row)"
 else
-  echo "  VERDICT: STOP, a certificate was issued: do not flash the next device"; exit 1
+  echo "  VERDICT: STOP, a certificate was issued around this flash: find out by which firmware before the next device"; exit 1
 fi
 PI_EOF
