@@ -189,6 +189,8 @@ static void homepi_main_task(void *arg)
     int64_t last_heartbeat = esp_timer_get_time();
 
     while (1) {
+        // A queued OTA command runs here, on the main task (v2.4.2)
+        mqtt_app_run_pending_ota();
         if (esp_timer_get_time() - last_heartbeat >= HEARTBEAT_PERIOD_US) {
             last_heartbeat = esp_timer_get_time();
             mqtt_app_publish_heartbeat();

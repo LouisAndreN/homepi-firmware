@@ -196,6 +196,8 @@ static void homepi_main_task(void *arg)
     int64_t last_identity_check = esp_timer_get_time();
 
     while (1) {
+        // A queued OTA command runs here, on the main task (v2.4.2)
+        mqtt_app_run_pending_ota();
         TickType_t now = xTaskGetTickCount();
         if ((now - last_publish) >= pdMS_TO_TICKS(SENSOR_PUBLISH_INTERVAL)) {
             mqtt_app_publish_sensors();

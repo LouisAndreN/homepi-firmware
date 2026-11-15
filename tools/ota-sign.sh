@@ -20,15 +20,16 @@ stop() { echo "STOPPED: $*"; exit 1; }
 
 echo "=== 1. signed tag $TAG, project $PROJECT${MODE:+ ($MODE)}"
 [ -f "$KEY" ] || stop "signing key not found: $KEY"
+# refs/tags/: a branch with the same name as the tag must not be built instead (v2.4.2)
 git -C "$REPO" tag -v "$TAG" > /dev/null 2>&1 || stop "$TAG is missing or its signature does not verify"
 WT=$(mktemp -d)
 cleanup() { git -C "$REPO" worktree remove --force "$WT" > /dev/null 2>&1; rm -rf "$WT"; }
 trap cleanup EXIT
-git -C "$REPO" worktree add -q --detach "$WT" "$TAG" || stop "cannot create a worktree for $TAG"
+git -C "$REPO" worktree add -q --detach "$WT" "refs/tags/$TAG" || stop "cannot create a worktree for $TAG"
 [ -d "$WT/$PROJECT" ] || stop "project $PROJECT does not exist at $TAG"
 PUB="$WT/components/homepi_ota/ota_signing_pub.pem"
 [ -f "$PUB" ] || stop "$TAG has no OTA public key (signed OTA starts with v2.4.1)"
-echo "  $TAG on $(git -C "$REPO" rev-parse --short "$TAG^{commit}"), public key in the image: $(openssl pkey -pubin -in "$PUB" -outform DER 2>/dev/null | sha256sum | cut -c1-16)..."
+echo "  $TAG on $(git -C "$REPO" rev-parse --short "refs/tags/$TAG^{commit}"), public key in the image: $(openssl pkey -pubin -in "$PUB" -outform DER 2>/dev/null | sha256sum | cut -c1-16)..."
 
 echo "=== 2. build"
 if [ -z "${IDF_PATH:-}" ]; then

@@ -9,6 +9,7 @@
 #include "sensors.h"
 #include "homepi_ota.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "mqtt_client.h"
 #include "cJSON.h"
@@ -27,13 +28,13 @@ static char s_topic_commands[128] = {0};
 
 // ── Handlers commandes MQTT ───────────────────────────────────
 
-// OTA (homepi_ota, v2.4.1). The command carries the signed manifest; it is checked here, while MQTT is
-// up, so that a refused command is reported at once without interrupting the broker session.
-typedef struct {
-    char url[256];
-    char manifest[HOTA_MANIFEST_MAX];
-    char signature[HOTA_SIGNATURE_MAX];
-} ota_task_args_t;
+// OTA (homepi_ota). The command carries the signed manifest; it is checked here, while MQTT is up,
+// so that a refused command is reported at once without interrupting the broker session.
+// v2.4.2: the MQTT task only checks, queues and acknowledges. The main task runs the download
+// (mqtt_app_run_pending_ota) in homepi_main, whose 32 KB stack exists from boot: nothing is allocated
+// per command.
+// v2.4.0/v2.4.1 created an 8 KB task here without checking the result: on the sensor with the least
+// free heap (bh1750+bme688+sps30+sgp41) the command was logged, then nothing, and nothing reported.
 
 void hota_on_event(hota_event_t event)
 {
@@ -47,42 +48,32 @@ static void publish_ota_failure(void)
         esp_mqtt_client_publish(mqtt_handle, s_topic_status, json, 0, 1, 0);
 }
 
-static void ota_launch_task(void *arg)
-{
-    ota_task_args_t *args = (ota_task_args_t *)arg;
-    // The download needs the heap the MQTT TLS session holds: no room for two TLS sessions
-    ESP_LOGI(TAG, "OTA task: stopping MQTT to free TLS buffers");
-    esp_mqtt_client_stop(mqtt_handle);
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    hota_start(args->url, args->manifest, args->signature);   // restarts on success
-    ESP_LOGE(TAG, "OTA failed: restarting MQTT");
-    esp_mqtt_client_start(mqtt_handle);
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    publish_ota_failure();
-    free(args);
-    vTaskDelete(NULL);
-}
-
 static void handle_ota(cJSON *cmd)
 {
     const char *url       = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "url"));
     const char *manifest  = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "manifest"));
     const char *signature = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "signature"));
-    if (!url || strlen(url) >= sizeof(((ota_task_args_t *)0)->url)) {
-        ESP_LOGE(TAG, "OTA: missing or too long url");
-        return;
-    }
-    if (hota_check_manifest(manifest, signature, NULL) != ESP_OK) {
+    if (hota_request(url, manifest, signature, NULL) != ESP_OK) {
         publish_ota_failure();
         return;
     }
-    ota_task_args_t *args = calloc(1, sizeof(*args));
-    if (!args) { ESP_LOGE(TAG, "OTA: out of memory"); return; }
-    strlcpy(args->url, url, sizeof(args->url));
-    strlcpy(args->manifest, manifest, sizeof(args->manifest));
-    strlcpy(args->signature, signature, sizeof(args->signature));
-    // Separate task: the MQTT event loop must not block, and only another task may stop the client
-    xTaskCreate(ota_launch_task, "ota_launch", 8192, args, 5, NULL);
+    char ack[160];
+    if (hota_received_json(ack, sizeof(ack)))
+        esp_mqtt_client_publish(mqtt_handle, s_topic_status, ack, 0, 1, 0);
+}
+
+void mqtt_app_run_pending_ota(void)
+{
+    if (!hota_has_request() || !mqtt_handle) return;
+    // Let the acknowledgment leave, then free the heap the MQTT TLS session holds: there is no room
+    // for two TLS sessions
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "OTA: stopping MQTT to free TLS buffers");
+    esp_mqtt_client_stop(mqtt_handle);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    hota_run_request();                     // restarts on success
+    ESP_LOGE(TAG, "OTA failed: restarting MQTT (the reason is published once connected)");
+    esp_mqtt_client_start(mqtt_handle);
 }
 
 static void handle_renew_cert(void)
@@ -163,6 +154,11 @@ static void publish_status(bool online)
     cJSON *payload = cJSON_CreateObject();
     cJSON_AddBoolToObject(payload, "online", online);
     cJSON_AddNumberToObject(payload, "ts", (double)time(NULL));
+    // v2.4.2: heap margin, measured where it matters (the free heap now, the lowest since boot, the
+    // largest block an allocation can get)
+    cJSON_AddNumberToObject(payload, "heap_free", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(payload, "heap_min", (double)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(payload, "heap_largest", (double)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     char *str = cJSON_PrintUnformatted(payload);
     // retain=1 : le broker mémorise le dernier statut
@@ -204,6 +200,8 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
 
             // Publier statut online
             publish_status(true);
+            // An OTA refused or failed while offline is reported now that the session is up
+            publish_ota_failure();
             break;
 
         case MQTT_EVENT_DISCONNECTED:

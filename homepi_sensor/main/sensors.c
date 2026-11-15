@@ -4,6 +4,7 @@
 #include "config.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "cJSON.h"
@@ -884,6 +885,10 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
     wifi_ap_record_t ap;
     cJSON_AddNumberToObject(payload, "rssi", esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0);
     cJSON_AddStringToObject(payload, "fw", esp_app_get_description()->version);
+    // v2.4.2: heap margin with every reading (the OTA of v2.4.0/v2.4.1 failed silently on this margin)
+    cJSON_AddNumberToObject(payload, "heap_free", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(payload, "heap_min", (double)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(payload, "heap_largest", (double)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     // ── hw_model ──────────────────────────────────────────────────
     char hw_model[32] = {0};

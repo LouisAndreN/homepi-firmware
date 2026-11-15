@@ -3,6 +3,7 @@
 #include "homepi_ota.h"
 #include "nvs_manager.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -12,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
@@ -136,6 +138,63 @@ esp_err_t hota_check_manifest(const char *manifest, const char *signature_b64, h
     ESP_LOGI(TAG, "Signed manifest accepted: %s %s for %s", m.project, m.version, m.chip_target);
     if (out) *out = m;
     return ESP_OK;
+}
+
+// ── Request queue (v2.4.2) ───────────────────────────────────
+// One writer (the MQTT task, hota_request) and one reader (the main task, hota_run_request): the
+// fields are written before the flag is published, and the flag is cleared only after the run.
+
+static struct {
+    char url[256];
+    char manifest[HOTA_MANIFEST_MAX];
+    char signature[HOTA_SIGNATURE_MAX];
+    hota_manifest_t m;
+} s_req;
+static bool s_req_pending;
+
+esp_err_t hota_request(const char *url, const char *manifest, const char *signature_b64, hota_manifest_t *out)
+{
+    if (__atomic_load_n(&s_req_pending, __ATOMIC_ACQUIRE))
+        return refuse(ESP_ERR_INVALID_STATE, "ota_in_progress", NULL, NULL);
+    hota_manifest_t m;
+    esp_err_t ret = hota_check_manifest(manifest, signature_b64, &m);
+    if (ret != ESP_OK) return ret;
+    if (!url || strncmp(url, "https://", 8) != 0 || strlen(url) >= sizeof(s_req.url))
+        return refuse(ESP_ERR_INVALID_ARG, "bad_url", NULL, m.version);
+    strlcpy(s_req.url, url, sizeof(s_req.url));
+    strlcpy(s_req.manifest, manifest, sizeof(s_req.manifest));
+    strlcpy(s_req.signature, signature_b64, sizeof(s_req.signature));
+    s_req.m = m;
+    __atomic_store_n(&s_req_pending, true, __ATOMIC_RELEASE);
+    ESP_LOGI(TAG, "OTA %s queued for the main task", m.version);
+    if (out) *out = m;
+    return ESP_OK;
+}
+
+bool hota_has_request(void)
+{
+    return __atomic_load_n(&s_req_pending, __ATOMIC_ACQUIRE);
+}
+
+bool hota_received_json(char *json, size_t len)
+{
+    // No allocation: the acknowledgment must go out on the device with the least free heap too.
+    // The versions are checked strings (vMAJOR.MINOR.PATCH[-rcN]): nothing to escape.
+    if (!hota_has_request()) return false;
+    int n = snprintf(json, len, "{\"type\":\"ota_received\",\"version\":\"%s\",\"running\":\"%s\",\"ts\":%lld}",
+                     s_req.m.version, esp_app_get_description()->version, (long long)time(NULL));
+    return n > 0 && (size_t)n < len;
+}
+
+esp_err_t hota_run_request(void)
+{
+    if (!hota_has_request()) return ESP_ERR_INVALID_STATE;
+    ESP_LOGI(TAG, "Running OTA %s: free heap %u B, largest block %u B", s_req.m.version,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    esp_err_t ret = hota_start(s_req.url, s_req.manifest, s_req.signature);   // restarts on success
+    __atomic_store_n(&s_req_pending, false, __ATOMIC_RELEASE);
+    return ret;
 }
 
 // ── Download and install ─────────────────────────────────────
