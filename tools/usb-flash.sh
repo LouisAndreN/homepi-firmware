@@ -101,11 +101,14 @@ J=$(journalctl -u step-ca --since @"$T0" --no-pager -o cat)
 S=$(echo "$J" | grep -c path=/1.0/sign); R=$(echo "$J" | grep -c path=/1.0/renew)
 echo "  step-ca since 15 min before the device was plugged in: sign $S, renew $R"
 Q "SELECT '  audit: ' || ts || ' ' || event || ' ' || substr(detail,1,90) FROM audit_log WHERE device_id='$DEV' AND ts >= strftime('%Y-%m-%dT%H:%M:%SZ',$T0,'unixepoch') ORDER BY id;"
-# The LDevID lives 365 days: an expiry less than 364 days away means it was issued in the last day
+# The LDevID lives 365 days: its issue time is the expiry minus 365 days. Issued inside the window
+# (15 minutes before the device was plugged in, or later) means a re-enrollment around this flash;
+# issued earlier the same day is only reported (the previous firmware re-enrolled at some outage).
 EXP=$(Q "SELECT cert_expiry FROM devices WHERE device_id='$DEV';")
-AGE_H=$(( ( $(date +%s) - ( $(date -d "$EXP" +%s) - 365 * 86400 ) ) / 3600 ))
-[ "$AGE_H" -lt 24 ] && echo "  WARNING: the certificate in use was issued ${AGE_H} h ago (expiry $EXP): a recent re-enrollment"
-if [ "$S" = 0 ] && [ "$R" = 0 ] && [ "$AGE_H" -ge 24 ]; then
+ISSUED=$(( $(date -d "$EXP" +%s) - 365 * 86400 ))
+AGE_H=$(( ($(date +%s) - ISSUED) / 3600 ))
+[ "$AGE_H" -lt 24 ] && echo "  note: the certificate in use was issued ${AGE_H} h ago ($(date -d @"$ISSUED" '+%F %T')), by the previous firmware"
+if [ "$S" = 0 ] && [ "$R" = 0 ] && [ "$ISSUED" -lt "$T0" ]; then
   echo "  VERDICT: OK, no new certificate (a fingerprint change only corrects a stale v2.3.x registry row)"
 else
   echo "  VERDICT: STOP, a certificate was issued around this flash: find out by which firmware before the next device"; exit 1
