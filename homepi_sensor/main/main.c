@@ -233,7 +233,11 @@ void app_main(void)
     xTaskCreate(
         homepi_main_task,   // fonction
         "homepi_main",      // nom
-        32768,              // stack en bytes — 32KB pour mbedtls + TLS
+        // v2.4.3: 16 KB instead of 32. Measured on esp32-819fe250 (v2.4.3-rc2, stack_main_free): 29512 of
+        // 32768 bytes never used after boot, enrollment HTTPS and 10 min of readings, so about 3.3 KB used.
+        // 16 KB keeps 4x that for the paths not yet measured on this task (OTA download since v2.4.2,
+        // LDevID renewal at boot); stack_main_free stays in the telemetry to check them.
+        16384,
         NULL,               // paramètre
         5,                  // priorité
         NULL                // handle (pas besoin)

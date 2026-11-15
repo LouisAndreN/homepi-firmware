@@ -12,11 +12,11 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 # USB-JTAG en secondaire (idf.py monitor continue à marcher sur PC)
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 
-# TLS / mbedTLS
-# v2.4.3: buffers allocated only while a record is in flight (heap_min was 9.5 KB on the sensor with
-# bh1750+bme688+sps30+sgp41). The record size stays 16 KB in: nginx sends 16 KB records during an OTA
-# download. (CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN, here until v2.4.2, is not an IDF 5.3 option: ignored.)
-CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# TLS / mbedTLS: static buffers (16 KB in, 4 KB out, for the whole session). v2.4.3-rc2 tried
+# CONFIG_MBEDTLS_DYNAMIC_BUFFER on esp32-819fe250: no measurable gain (heap_free 17.4 KB and heap_min
+# 9560 B before and after), and a 16 KB record would then need a contiguous block at that moment, which
+# this device does not have (largest block 8 KB): reverted. (CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN, here
+# until v2.4.2, is not an IDF 5.3 option: it was ignored.)
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 CONFIG_ESP_TLS_INSECURE=n
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=n
