@@ -178,7 +178,13 @@ static void homepi_main_task(void *arg)
 
     // ── MQTT mTLS ─────────────────────────────────────────────
     ESP_LOGI(TAG, "Enrolled — starting MQTT mTLS");
+#if CONFIG_HOMEPI_OTA_ROLLBACK_TEST
+    // Rollback test image (never shipped): no broker connection, so no confirmation; the deadline
+    // below restarts it and the bootloader reverts to the previous image
+    ESP_LOGW(TAG, "Rollback test image: not connecting to the broker");
+#else
     ESP_ERROR_CHECK(mqtt_app_start());
+#endif
     led_set(LED_OPERATIONAL);
 
     // Sensors déjà initialisés plus haut (avant enrollment) — pas de second

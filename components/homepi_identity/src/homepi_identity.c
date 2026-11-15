@@ -445,6 +445,8 @@ esp_err_t hid_register(const hid_profile_t *profile)
     cJSON_AddStringToObject(b, "device_id", device_id);
     cJSON_AddStringToObject(b, "chip_id", chip_id[0] ? chip_id : "unknown");
     cJSON_AddStringToObject(b, "fw_version", esp_app_get_description()->version);
+    // v2.4.1: the project tells the registry which image this device takes (staged OTA by project)
+    cJSON_AddStringToObject(b, "project", esp_app_get_description()->project_name);
     cJSON_AddStringToObject(b, "hw_model", hw[0] ? hw : "unknown");
 #if CONFIG_IDF_TARGET_ESP32S3
     cJSON_AddStringToObject(b, "chip_target", "esp32s3");

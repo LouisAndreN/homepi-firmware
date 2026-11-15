@@ -880,7 +880,9 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
         cJSON_AddNumberToObject(payload, "nox_raw", data.nox_raw);
     }
 
-    cJSON_AddNumberToObject(payload, "rssi", data.rssi);
+    // v2.4.1: data.rssi was never set (always 0); read it from the associated access point
+    wifi_ap_record_t ap;
+    cJSON_AddNumberToObject(payload, "rssi", esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0);
     cJSON_AddStringToObject(payload, "fw", esp_app_get_description()->version);
 
     // ── hw_model ──────────────────────────────────────────────────

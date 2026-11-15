@@ -25,3 +25,6 @@ __pycache__/
 *.crt
 *.der
 devices/
+
+# The OTA signing public key is public and compiled into every image (homepi_ota, v2.4.1)
+!components/homepi_ota/ota_signing_pub.pem

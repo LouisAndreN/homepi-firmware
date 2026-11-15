@@ -172,7 +172,9 @@ static void homepi_main_task(void *arg)
     hid_renew_if_due(false, &renewed);
     // Tell the registry which LDevID this device holds. Refused while the device is not
     // pre-announced or approved: it keeps running, the operator decides.
-    hid_register(NULL);
+    // The NVS hw_model of this bridge says esp32c3 (provisioning mistake): the firmware states it
+    static const hid_profile_t nilm_profile = { .hw_model = "xiao_esp32s3", .capabilities_csv = NULL };
+    hid_register(&nilm_profile);
 
     // ── MQTT mTLS ─────────────────────────────────────────────
     ESP_LOGI(TAG, "Enrolled — starting MQTT mTLS");

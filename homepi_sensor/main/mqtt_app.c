@@ -7,7 +7,7 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "sensors.h"
-#include "ota.h"
+#include "homepi_ota.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "mqtt_client.h"
@@ -27,70 +27,62 @@ static char s_topic_commands[128] = {0};
 
 // ── Handlers commandes MQTT ───────────────────────────────────
 
-// Struct pour passer les paramètres à la task OTA
+// OTA (homepi_ota, v2.4.1). The command carries the signed manifest; it is checked here, while MQTT is
+// up, so that a refused command is reported at once without interrupting the broker session.
 typedef struct {
     char url[256];
-    char sha256[65];
+    char manifest[HOTA_MANIFEST_MAX];
+    char signature[HOTA_SIGNATURE_MAX];
 } ota_task_args_t;
+
+void hota_on_event(hota_event_t event)
+{
+    led_set(event == HOTA_EVENT_DOWNLOADING ? LED_OTA : LED_OPERATIONAL);
+}
+
+static void publish_ota_failure(void)
+{
+    char json[256];
+    if (hota_take_last_failure(json, sizeof(json)) && mqtt_handle)
+        esp_mqtt_client_publish(mqtt_handle, s_topic_status, json, 0, 1, 0);
+}
 
 static void ota_launch_task(void *arg)
 {
-    ota_task_args_t *args = (ota_task_args_t*)arg;
-
-    // Ici on est HORS de la task MQTT → stop() autorisé
+    ota_task_args_t *args = (ota_task_args_t *)arg;
+    // The download needs the heap the MQTT TLS session holds: no room for two TLS sessions
     ESP_LOGI(TAG, "OTA task: stopping MQTT to free TLS buffers");
     esp_mqtt_client_stop(mqtt_handle);
-    vTaskDelay(pdMS_TO_TICKS(3000));  // Laisser mbedTLS libérer la mémoire
-
-    // ota_start() appelle esp_restart() si succès — ne revient pas
-    ota_start(args->url, args->sha256);
-
-    // Si on arrive ici : OTA échoué
-    ESP_LOGE(TAG, "OTA failed — restarting MQTT");
-    esp_mqtt_client_start(mqtt_handle);
-
-    // Laisser le temps à MQTT de se reconnecter avant de publier le
-    // diagnostic — sinon on retombe dans le même piège de timing.
     vTaskDelay(pdMS_TO_TICKS(3000));
-    ota_publish_last_failure();
-
+    hota_start(args->url, args->manifest, args->signature);   // restarts on success
+    ESP_LOGE(TAG, "OTA failed: restarting MQTT");
+    esp_mqtt_client_start(mqtt_handle);
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    publish_ota_failure();
     free(args);
     vTaskDelete(NULL);
 }
 
 static void handle_ota(cJSON *cmd)
 {
-    const char *url     = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "url"));
-    const char *sha256  = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "sha256"));
-    const char *version = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "version"));
-
-    if (!url || !sha256 || !version) {
-        ESP_LOGE(TAG, "OTA: missing fields");
+    const char *url       = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "url"));
+    const char *manifest  = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "manifest"));
+    const char *signature = cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "signature"));
+    if (!url || strlen(url) >= sizeof(((ota_task_args_t *)0)->url)) {
+        ESP_LOGE(TAG, "OTA: missing or too long url");
         return;
     }
-    ESP_LOGI(TAG, "OTA command: v%s from %s", version, url);
-
-    ota_task_args_t *args = malloc(sizeof(ota_task_args_t));
-    if (!args) { ESP_LOGE(TAG, "OTA: malloc failed"); return; }
-    strlcpy(args->url,    url,    sizeof(args->url));
-    strlcpy(args->sha256, sha256, sizeof(args->sha256));
-
-    // Task séparée : ne bloque pas le MQTT event loop
+    if (hota_check_manifest(manifest, signature, NULL) != ESP_OK) {
+        publish_ota_failure();
+        return;
+    }
+    ota_task_args_t *args = calloc(1, sizeof(*args));
+    if (!args) { ESP_LOGE(TAG, "OTA: out of memory"); return; }
+    strlcpy(args->url, url, sizeof(args->url));
+    strlcpy(args->manifest, manifest, sizeof(args->manifest));
+    strlcpy(args->signature, signature, sizeof(args->signature));
+    // Separate task: the MQTT event loop must not block, and only another task may stop the client
     xTaskCreate(ota_launch_task, "ota_launch", 8192, args, 5, NULL);
-
-    // // Arrêter MQTT pour libérer les buffers TLS (~12-16KB)
-    // // L'OTA a besoin de cette mémoire pour son propre handshake TLS
-    // ESP_LOGI(TAG, "Stopping MQTT to free TLS memory for OTA");
-    // esp_mqtt_client_stop(mqtt_handle);
-    // vTaskDelay(pdMS_TO_TICKS(2000));  // Laisser mbedTLS libérer les buffers
-
-    // led_set(LED_OTA);
-    // ota_start(url, sha256);
-    // // ota_start() appelle esp_restart() si succès
-    // // Si échec → led_set(LED_OPERATIONAL)
-    // // Si on arrive ici → OTA a échoué (succès = esp_restart())
-    // ESP_LOGE(TAG, "OTA failed — restarting MQTT");
-    // esp_mqtt_client_start(mqtt_handle);
 }
 
 static void handle_renew_cert(void)

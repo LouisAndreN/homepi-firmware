@@ -5,7 +5,6 @@ idf_component_register(
         "ntp_sync.c"
         "mqtt_app.c"
         "strip_control.c"
-        "ota.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
@@ -20,5 +19,6 @@ idf_component_register(
         lwip
         app_update
         homepi_identity
+        homepi_ota
         led_strip
 )

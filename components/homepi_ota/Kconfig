@@ -1,0 +1,9 @@
+menu "HomePi OTA"
+    config HOMEPI_OTA_ROLLBACK_TEST
+        bool "Rollback test image: never connect to the broker"
+        default n
+        help
+            Builds an image that boots, never connects to MQTT and therefore never confirms itself:
+            after the 10-minute confirmation deadline it restarts and the bootloader reverts to the
+            previous image. Used once to prove the rollback; never shipped.
+endmenu
