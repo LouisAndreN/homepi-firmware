@@ -39,8 +39,9 @@ fi
 . "$IDF_PATH/export.sh" > /dev/null 2>&1 || stop "export.sh failed"
 B="$WT/$PROJECT/build"; EXTRA=()
 if [ "$MODE" = --rollback-test ]; then
-  printf 'CONFIG_HOMEPI_OTA_ROLLBACK_TEST=y\n' > "$WT/rollback-test.defaults"
-  EXTRA=(-D "SDKCONFIG_DEFAULTS=$WT/$PROJECT/sdkconfig.defaults;$WT/rollback-test.defaults")
+  # A copy of the committed sdkconfig plus the option: SDKCONFIG_DEFAULTS is ignored once a sdkconfig exists
+  cp "$WT/$PROJECT/sdkconfig" "$WT/rollback-test.sdkconfig" && echo 'CONFIG_HOMEPI_OTA_ROLLBACK_TEST=y' >> "$WT/rollback-test.sdkconfig"
+  EXTRA=(-D "SDKCONFIG=$WT/rollback-test.sdkconfig")
 fi
 idf.py -C "$WT/$PROJECT" -B "$B" "${EXTRA[@]}" build > "$LOG/build.log" 2>&1 \
   || { grep -E "error:" "$LOG/build.log" | head -10; stop "build failed (full log: $LOG/build.log)"; }
