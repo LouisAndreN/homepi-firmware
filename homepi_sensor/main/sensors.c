@@ -5,6 +5,8 @@
 #include "driver/i2c.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_wifi.h"
 #include "esp_timer.h"
 #include "cJSON.h"
@@ -889,6 +891,8 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
     cJSON_AddNumberToObject(payload, "heap_free", (double)heap_caps_get_free_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(payload, "heap_min", (double)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(payload, "heap_largest", (double)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    // v2.4.3: unused stack of homepi_main since boot (this runs on it), to size its 32 KB from a measure
+    cJSON_AddNumberToObject(payload, "stack_main_free", (double)uxTaskGetStackHighWaterMark(NULL));
 
     // ── hw_model ──────────────────────────────────────────────────
     char hw_model[32] = {0};

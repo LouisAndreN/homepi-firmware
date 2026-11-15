@@ -13,13 +13,16 @@ CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 
 # TLS / mbedTLS
-CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=8192
+# v2.4.3: buffers allocated only while a record is in flight (heap_min was 9.5 KB on the sensor with
+# bh1750+bme688+sps30+sgp41). The record size stays 16 KB in: nginx sends 16 KB records during an OTA
+# download. (CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN, here until v2.4.2, is not an IDF 5.3 option: ignored.)
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 CONFIG_ESP_TLS_INSECURE=n
 CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=n
 
-# MQTT
-CONFIG_MQTT_BUFFER_SIZE=4096
+# MQTT: default 1024-byte buffers (CONFIG_MQTT_BUFFER_SIZE, here until v2.4.2, is ignored without
+# CONFIG_MQTT_USE_CUSTOM_CONFIG). An OTA command is about 550 bytes.
 
 # NTP
 CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
