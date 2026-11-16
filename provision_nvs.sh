@@ -37,7 +37,11 @@ WIFI_PASS=$(grep "^WIFI_PASS=" "$WIFI_CONFIG" | cut -d= -f2- | tr -d '\r\n')
 echo "WIFI SSID : $WIFI_SSID"
 
 # 4. Generate CSV - NO space around comas
-NVS_CSV="$SCRIPT_DIR/nvs_generated.csv"
+# The CSV and the binary hold the Wi-Fi password: private temporary directory, removed on exit
+WORK=$(mktemp -d)
+chmod 700 "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+NVS_CSV="$WORK/nvs_generated.csv"
 {
   printf "key,type,encoding,value\n"
   printf "config,namespace,,\n"
@@ -52,15 +56,15 @@ NVS_CSV="$SCRIPT_DIR/nvs_generated.csv"
 } > "$NVS_CSV"
 
 echo ""
-echo "Generated NVS CSV:"
-cat "$NVS_CSV"
+echo "Generated NVS CSV (Wi-Fi password masked):"
+sed -E 's/^(wifi_pass,data,string,).*/\1[masked]/' "$NVS_CSV"
 echo ""
 
 # 5. Generate NVS binary
-NVS_BIN="$SCRIPT_DIR/nvs_generated.bin"
+NVS_BIN="$WORK/nvs_generated.bin"
 python "$IDF_PATH/components/nvs_flash/nvs_partition_generator/nvs_partition_gen.py" generate "$NVS_CSV" "$NVS_BIN" 0x6000
 
-echo "NVS binary generated: $NVS_BIN"
+echo "NVS binary generated (temporary, removed on exit)"
 
 # 6. Flash NVS partition (offset 0x9000)
 echo "Flashing NVS partition..."
