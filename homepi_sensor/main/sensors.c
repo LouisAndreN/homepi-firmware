@@ -609,19 +609,11 @@ static esp_err_t bme688_measure(float *temp, float *hum, float *press)
 
 static bool s_sps30_ready = false;
 
-static esp_err_t sps30_send_cmd16(uint16_t cmd)
-{
-    uint8_t buf[2] = { cmd >> 8, cmd & 0xFF };
-    return i2c_write(I2C_SPS30_ADDR, buf, 2);
-}
-
 static esp_err_t sps30_init(void)
 {
-    // Wake-up (in case it is asleep): the error is ignored, not always needed
-    // sps30_send_cmd16(0x1103);
-    // vTaskDelay(pdMS_TO_TICKS(5));
+    // The wake-up command (0x1103) is not sent: it has been commented out since v2.3.0
 
-    // Start measurement — 0x0010, arg 0x0300 (float output), CRC de l'arg
+    // Start measurement — 0x0010, arg 0x0300 (float output), CRC of the argument
     uint8_t buf[5] = { 0x00, 0x10, 0x03, 0x00, 0x00 };
     buf[4] = scd41_crc8(&buf[2], 2);
     esp_err_t ret = i2c_write(I2C_SPS30_ADDR, buf, 5);
