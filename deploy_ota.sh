@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 VERSION=$1
-FILTER=${2:-all}  # "all", device_id specifique, ou "fw:2.0.0" pour filtrer par version
+FILTER=${2:-all}  # "all", a specific device_id, or "fw:2.0.0" to filter by version
 PI=srvpi@192.168.0.151
 
 [ -z "$VERSION" ] && echo "Usage: $0 <version> [device_id|all|fw:X.X.X]" && exit 1

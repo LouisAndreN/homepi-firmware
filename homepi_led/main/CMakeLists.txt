@@ -1,8 +1,6 @@
 idf_component_register(
     SRCS
         "main.c"
-        "led.c"
-        "ntp_sync.c"
         "mqtt_app.c"
         "strip_control.c"
     INCLUDE_DIRS "."
@@ -18,6 +16,7 @@ idf_component_register(
         esp_timer
         lwip
         app_update
+        homepi_common
         homepi_identity
         homepi_ota
         led_strip

@@ -24,22 +24,22 @@
 static const char *TAG = "sensors";
 
 
-// ── Type des fonctions de driver ───────────────────────────────────────────
+// ── Driver function types ───────────────────────────────────────────
 typedef esp_err_t (*sensor_init_fn)(void);
 typedef esp_err_t (*sensor_read_fn)(sensor_data_t *out);
 
 typedef struct {
     uint8_t         addr;
     const char     *name;           // nom canonique → construit hw_model
-    const char     *capabilities;   // CSV des métriques publiées
+    const char     *capabilities;   // CSV of the published metrics
     sensor_init_fn  init;
     sensor_read_fn  read;
 } sensor_driver_t;
 
 
-// ── Forward declarations — TOUTES les fonctions internes de mesure,
-// requises car référencées dans SENSOR_DRIVERS[] plus bas mais définies
-// plus loin dans le fichier ────────────────────────────────────────────────
+// ── Forward declarations: ALL internal measurement functions,
+// needed because they are referenced in SENSOR_DRIVERS[] below but defined
+// further down in the file ────────────────────────────────────────────────
 static esp_err_t scd41_init(void);
 static esp_err_t scd41_measure_once(float *co2, float *temp, float *hum);
 static esp_err_t bme688_init(void);
@@ -53,11 +53,11 @@ static esp_err_t sps30_measure(float *pm1_0, float *pm2_5, float *pm4_0, float *
 static esp_err_t sgp41_init(void);
 static esp_err_t sgp41_measure_raw(float rh_pct, float temp_c, uint16_t *sraw_voc, uint16_t *sraw_nox);
 
-// ── Read wrappers pour la dispatch table ────────────────────────────────────
-// Chaque wrapper est responsable de poser SON PROPRE flag _ok dans out —
-// c'est ce qui permet à sensors_read_all() de rester générique et de ne
-// jamais avoir besoin d'être modifiée pour un nouveau capteur : ajouter un
-// capteur = ajouter un wrapper + une ligne dans SENSOR_DRIVERS[], point final.
+// ── Read wrappers for the dispatch table ────────────────────────────────────
+// Each wrapper is responsible for setting ITS OWN _ok flag in out:
+// this is what keeps sensors_read_all() generic, so that it never
+// needs to change for a new sensor: adding a
+// sensor = adding a wrapper + one line in SENSOR_DRIVERS[], nothing else.
 
 static esp_err_t bh1750_read(sensor_data_t *out)
 {
@@ -81,8 +81,8 @@ static esp_err_t bme688_read(sensor_data_t *out)
     if (ret == ESP_OK) {
         out->pressure = p;
         out->iaq = 25.0f + fabsf(h - 45.0f) * 2.0f;
-        // T/H seulement si aucun capteur T/H plus prioritaire n'a déjà écrit
-        // (priorité = ordre de la dispatch table : SCD41 > BME688 > SHT40)
+        // T/H only if no higher-priority T/H sensor has written already
+        // (priority = dispatch table order: SCD41 > BME688 > SHT40)
         if (out->temperature == 0.0f) {
             out->temperature = t;
             out->humidity    = h;
@@ -121,10 +121,10 @@ static esp_err_t sps30_read(sensor_data_t *out)
 
 static esp_err_t sgp41_read(sensor_data_t *out)
 {
-    // Compense avec la T/H déjà écrite par les drivers précédents dans out
-    // (SGP41 DOIT rester en dernière position dans SENSOR_DRIVERS[] pour
-    // que ceci soit garanti — voir commentaire sur la table plus bas).
-    // Fallback 25°C/50%RH si aucun capteur T/H actif sur ce device.
+    // Compensates with the T/H already written in out by the previous drivers
+    // (SGP41 MUST stay last in SENSOR_DRIVERS[] for
+    // this to be guaranteed; see the comment on the table below).
+    // Fallback 25°C/50%RH if no T/H sensor is active on this device.
     float rh = (out->humidity > 0.0f) ? out->humidity : 50.0f;
     float t  = (out->temperature != 0.0f) ? out->temperature : 25.0f;
 
@@ -138,10 +138,10 @@ static esp_err_t sgp41_read(sensor_data_t *out)
     return ret;
 }
 
-// ── Table de dispatch — ajouter un capteur = 1 wrapper + 1 ligne ici ───────
-// ORDRE IMPORTANT : sensors_read_all() itère s_active[] dans cet ordre exact
-// (préservé depuis la découverte). sgp41 doit rester en DERNIER car il
-// consomme out->temperature/humidity déjà écrits par les drivers précédents.
+// ── Dispatch table: adding a sensor = 1 wrapper + 1 line here ───────
+// ORDER MATTERS: sensors_read_all() iterates s_active[] in this exact order
+// (kept from discovery). sgp41 must stay LAST because it
+// consumes out->temperature/humidity already written by the previous drivers.
 static const sensor_driver_t SENSOR_DRIVERS[] = {
     { 0x23, "bh1750",  "lux",                          bh1750_init,  bh1750_read  },
     { 0x62, "scd41",   "co2,temperature,humidity",      scd41_init,   scd41_read   },
@@ -155,7 +155,7 @@ static const sensor_driver_t SENSOR_DRIVERS[] = {
 };
 #define N_DRIVERS (sizeof(SENSOR_DRIVERS) / sizeof(SENSOR_DRIVERS[0]))
 
-// ── État runtime ───────────────────────────────────────────────────────────
+// ── Runtime state ───────────────────────────────────────────────────────────
 static const sensor_driver_t *s_active[8];
 static int                    s_active_count = 0;
 static char                   s_capabilities_csv[256];  // "co2,temperature,lux"
@@ -172,7 +172,7 @@ esp_err_t sensors_discover_and_init(void)
     s_hw_model[0] = '\0';
 
     for (int i = 0; i < (int)N_DRIVERS; i++) {
-        // Sonde I2C : le master envoie l'adresse, attend ACK
+        // I2C probe: the master sends the address and waits for an ACK
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd,
@@ -181,12 +181,12 @@ esp_err_t sensors_discover_and_init(void)
         esp_err_t r = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(20));
         i2c_cmd_link_delete(cmd);
 
-        if (r != ESP_OK) continue;  // pas de réponse → absent
+        if (r != ESP_OK) continue;  // no answer -> absent
 
-        // Présent → init
+        // Present -> init
         esp_err_t init_ret = SENSOR_DRIVERS[i].init();
         if (init_ret != ESP_OK) {
-            ESP_LOGW(TAG, "✗ %s @ 0x%02X : présent mais init échoué (%s)",
+            ESP_LOGW(TAG, "✗ %s @ 0x%02X: present but init failed (%s)",
                      SENSOR_DRIVERS[i].name,
                      SENSOR_DRIVERS[i].addr,
                      esp_err_to_name(init_ret));
@@ -196,8 +196,8 @@ esp_err_t sensors_discover_and_init(void)
         ESP_LOGI(TAG, "✓ %s @ 0x%02X", SENSOR_DRIVERS[i].name, SENSOR_DRIVERS[i].addr);
         s_active[s_active_count++] = &SENSOR_DRIVERS[i];
 
-        // Construire capabilities CSV (dédupliquer)
-        // Simple : on concatène, le Pi déduplique
+        // Build the capabilities CSV (deduplicate)
+        // Simple: concatenate, the Pi deduplicates
         if (s_capabilities_csv[0]) strncat(s_capabilities_csv, ",", sizeof(s_capabilities_csv)-1);
         strncat(s_capabilities_csv, SENSOR_DRIVERS[i].capabilities, sizeof(s_capabilities_csv)-1);
 
@@ -208,7 +208,7 @@ esp_err_t sensors_discover_and_init(void)
         if (s_active_count >= 8) break;
     }
 
-    // Persister en NVS pour éviter re-scan si boot rapide
+    // Persist in NVS to avoid a rescan on a quick reboot
     nvs_mgr_set_string("hw_model", s_hw_model);
     nvs_mgr_set_string("capabilities", s_capabilities_csv);
 
@@ -218,14 +218,14 @@ esp_err_t sensors_discover_and_init(void)
     return s_active_count > 0 ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
 
-// Point d'entrée UNIQUE pour lire tous les capteurs actifs — générique,
-// jamais besoin d'être modifiée pour un nouveau capteur. Chaque driver
-// pose lui-même son flag _ok dans out (voir wrappers plus haut).
+// SINGLE entry point to read all active sensors: generic,
+// never needs to change for a new sensor. Each driver
+// sets its own _ok flag in out (see the wrappers above).
 esp_err_t sensors_read_all(sensor_data_t *out)
 {
     memset(out, 0, sizeof(*out));
     for (int i = 0; i < s_active_count; i++) {
-        s_active[i]->read(out);  // erreurs individuelles déjà loguées par chaque driver si besoin ; on continue malgré un échec ponctuel
+        s_active[i]->read(out);  // individual errors already logged by each driver if needed; carry on despite a one-off failure
     }
     return ESP_OK;
 }
@@ -256,8 +256,8 @@ static esp_err_t i2c_write_read(uint8_t addr,
                                         pdMS_TO_TICKS(100));
 }
 
-// ── CRC8 partagé (poly 0x31, init 0xFF) — SCD41, SHT40, SPS30, SGP41 ─────
-// Tous les capteurs Sensirion de ce firmware utilisent ce même CRC8.
+// ── Shared CRC8 (poly 0x31, init 0xFF): SCD41, SHT40, SPS30, SGP41 ─────
+// All Sensirion sensors of this firmware use the same CRC8.
 
 static uint8_t scd41_crc8(const uint8_t *data, size_t len)
 {
@@ -280,7 +280,7 @@ static esp_err_t scd41_send_cmd(uint16_t cmd)
 
 static esp_err_t scd41_init(void)
 {
-    // stop_periodic_measurement au cas où déjà actif
+    // stop_periodic_measurement in case it is already running
     scd41_send_cmd(0x3F86);
     vTaskDelay(pdMS_TO_TICKS(500));
 
@@ -288,7 +288,7 @@ static esp_err_t scd41_init(void)
     scd41_send_cmd(0x3646);
     vTaskDelay(pdMS_TO_TICKS(30));
 
-    // Vérifier présence : get_serial_number (0x3682)
+    // Check presence: get_serial_number (0x3682)
     uint8_t cmd[] = {0x36, 0x82};
     uint8_t resp[9];
     esp_err_t ret = i2c_write_read(I2C_SCD41_ADDR, cmd, 2, resp, 9);
@@ -307,7 +307,7 @@ static esp_err_t scd41_measure_once(float *co2, float *temp, float *hum)
     esp_err_t ret = scd41_send_cmd(0x219D);
     if (ret != ESP_OK) return ret;
 
-    // Attendre fin de mesure (5s pour single-shot)
+    // Wait for the end of the measurement (5 s for single-shot)
     vTaskDelay(pdMS_TO_TICKS(5100));
 
     // read_measurement (0xEC05)
@@ -316,7 +316,7 @@ static esp_err_t scd41_measure_once(float *co2, float *temp, float *hum)
     ret = i2c_write_read(I2C_SCD41_ADDR, cmd, 2, data, 9);
     if (ret != ESP_OK) return ret;
 
-    // Vérifier CRC des 3 mots
+    // Check the CRC of the 3 words
     if (scd41_crc8(&data[0], 2) != data[2] ||
         scd41_crc8(&data[3], 2) != data[5] ||
         scd41_crc8(&data[6], 2) != data[8]) {
@@ -374,7 +374,7 @@ static esp_err_t sht40_measure(float *temp, float *hum)
     ret = i2c_read(I2C_SHT40_ADDR, data, 6);
     if (ret != ESP_OK) return ret;
 
-    // CRC8 même poly que SCD41 — réutilise scd41_crc8()
+    // CRC8 with the same polynomial as SCD41: reuses scd41_crc8()
     if (scd41_crc8(&data[0], 2) != data[2] ||
         scd41_crc8(&data[3], 2) != data[5]) {
         ESP_LOGE(TAG, "SHT40 CRC error");
@@ -394,11 +394,11 @@ static esp_err_t sht40_measure(float *temp, float *hum)
 
 
 // ── BME688 ────────────────────────────────────────────────────
-// Température, humidité, pression — sans BSEC (IAQ approximatif)
-// Le vrai IAQ nécessite la bibliothèque Bosch BSEC (propriétaire)
+// Temperature, humidity, pressure, without BSEC (approximate IAQ)
+// The real IAQ needs the Bosch BSEC library (proprietary)
 
 typedef struct {
-    // Calibration température
+    // Temperature calibration
     uint16_t par_t1;
     int16_t  par_t2;
     int8_t   par_t3;
@@ -413,7 +413,7 @@ typedef struct {
     int16_t  par_p8;
     int16_t  par_p9;
     uint8_t  par_p10;
-    // Calibration humidité
+    // Humidity calibration
     uint16_t par_h1;
     uint16_t par_h2;
     int8_t   par_h3;
@@ -421,7 +421,7 @@ typedef struct {
     int8_t   par_h5;
     uint8_t  par_h6;
     int8_t   par_h7;
-    // t_fine (calculé lors de la mesure T)
+    // t_fine (computed during the T measurement)
     int32_t  t_fine;
 } bme688_calib_t;
 
@@ -455,12 +455,12 @@ static esp_err_t bme688_read_calib(void)
     }
 
     s_bme688_calib.par_t1 = (uint16_t)(coeff2[9]  << 8 | coeff2[8]);
-    // FIX : par_t2/par_t3 étaient décalés d'un octet vers le bas
-    // (registres réels 0x8A/0x8B pour t2, 0x8C pour t3 → offsets 1-2 et 3
-    // depuis 0x89, PAS 0-1 et 2). Ce décalage corrompait t_fine, qui est
-    // aussi réutilisé tel quel par bme688_comp_press() — d'où température
-    // ET pression fausses simultanément (-4°C constant, 869 hPa au lieu
-    // de ~940-960 hPa attendus à l'altitude de Nagano).
+    // FIX: par_t2/par_t3 were shifted one byte down
+    // (real registers 0x8A/0x8B for t2, 0x8C for t3 -> offsets 1-2 and 3
+    // from 0x89, NOT 0-1 and 2). This shift corrupted t_fine, which is
+    // also reused as is by bme688_comp_press(): hence wrong temperature
+    // AND pressure at the same time (a constant -4°C, 869 hPa instead
+    // of the ~940-960 hPa expected at Nagano's altitude).
     s_bme688_calib.par_t2 = (int16_t) (coeff1[2]  << 8 | coeff1[1]);
     s_bme688_calib.par_t3 = (int8_t)   coeff1[3];
 
@@ -486,7 +486,7 @@ static esp_err_t bme688_read_calib(void)
     return ESP_OK;
 }
 
-// Compensation température (retourne °C, met à jour t_fine)
+// Temperature compensation (returns °C, updates t_fine)
 static float bme688_comp_temp(uint32_t adc_T)
 {
     bme688_calib_t *c = &s_bme688_calib;
@@ -519,7 +519,7 @@ static float bme688_comp_press(uint32_t adc_P)
     return press / 100.0f; // Pa → hPa
 }
 
-// Compensation humidité (%)
+// Humidity compensation (%)
 static float bme688_comp_hum(uint16_t adc_H)
 {
     bme688_calib_t *c = &s_bme688_calib;
@@ -539,7 +539,7 @@ static float bme688_comp_hum(uint16_t adc_H)
 
 static esp_err_t bme688_init(void)
 {
-    // Vérifier chip_id (0xD0 register → 0x61 pour BME688)
+    // Check chip_id (register 0xD0 -> 0x61 for BME688)
     uint8_t chip_id;
     esp_err_t ret = bme688_read_reg(0xD0, &chip_id);
     if (ret != ESP_OK || chip_id != 0x61) {
@@ -568,13 +568,13 @@ static esp_err_t bme688_measure(float *temp, float *hum, float *press)
 {
     if (!s_bme688_ready) return ESP_ERR_INVALID_STATE;
 
-    // Déclencher forced mode
+    // Trigger forced mode
     uint8_t ctrl;
     bme688_read_reg(0x74, &ctrl);
     bme688_write_reg(0x74, (ctrl & 0xFC) | 0x01);
     vTaskDelay(pdMS_TO_TICKS(150));
 
-    // Attendre fin de mesure (meas_status_0 bit 5)
+    // Wait for the end of the measurement (meas_status_0 bit 5)
     int timeout = 20;
     uint8_t status;
     do {
@@ -582,7 +582,7 @@ static esp_err_t bme688_measure(float *temp, float *hum, float *press)
         bme688_read_reg(0x1D, &status);
     } while ((status & 0x20) && --timeout > 0);
 
-    // Lire données brutes (0x1F → 0x26)
+    // Read the raw data (0x1F -> 0x26)
     uint8_t raw[8];
     for (int i = 0; i < 8; i++) {
         uint8_t reg = 0x1F + i;
@@ -604,8 +604,8 @@ static esp_err_t bme688_measure(float *temp, float *hum, float *press)
 
 
 // ── SPS30 ─────────────────────────────────────────────────────
-// Note: SPS30 utilise des commandes 16-bit (pas 8-bit comme les autres),
-// et le même CRC8 poly 0x31/init 0xFF que les autres capteurs Sensirion.
+// Note: SPS30 uses 16-bit commands (not 8-bit like the others),
+// and the same CRC8 poly 0x31/init 0xFF as the other Sensirion sensors.
 
 static bool s_sps30_ready = false;
 
@@ -617,7 +617,7 @@ static esp_err_t sps30_send_cmd16(uint16_t cmd)
 
 static esp_err_t sps30_init(void)
 {
-    // Wake-up (au cas où en veille) — ignore l'erreur, pas toujours nécessaire
+    // Wake-up (in case it is asleep): the error is ignored, not always needed
     // sps30_send_cmd16(0x1103);
     // vTaskDelay(pdMS_TO_TICKS(5));
 
@@ -637,7 +637,7 @@ static esp_err_t sps30_init(void)
 
 static float sps30_words_to_float(const uint8_t *d)
 {
-    // Big-endian IEEE754, 2 mots de 16 bits chacun avec CRC individuel déjà validé en amont
+    // Big-endian IEEE754, 2 words of 16 bits, each with its own CRC already validated upstream
     uint32_t bits = ((uint32_t)d[0] << 24) | ((uint32_t)d[1] << 16)
                    | ((uint32_t)d[3] << 8)  | (uint32_t)d[4];
     float f;
@@ -649,8 +649,8 @@ static esp_err_t sps30_measure(float *pm1_0, float *pm2_5, float *pm4_0, float *
 {
     if (!s_sps30_ready) return ESP_ERR_INVALID_STATE;
 
-    // Read data-ready flag (0x0202) avec retry — le SPS30 peut prendre
-    // quelques secondes après start_measurement avant sa première trame valide
+    // Read the data-ready flag (0x0202) with retries: the SPS30 can take
+    // a few seconds after start_measurement before its first valid frame
     uint8_t rcmd[2] = {0x02, 0x02};
     uint8_t rdy[3];
     int retries = 10; // ~1s max (10 x 100ms)
@@ -670,12 +670,12 @@ static esp_err_t sps30_measure(float *pm1_0, float *pm2_5, float *pm4_0, float *
     esp_err_t ret = i2c_write_read(I2C_SPS30_ADDR, cmd, 2, data, 60);
     if (ret != ESP_OK) return ret;
 
-    // DEBUG temporaire — à retirer une fois le problème résolu
+    // Temporary DEBUG: to remove once the problem is solved
     ESP_LOGI(TAG, "SPS30 raw: %02X %02X %02X %02X %02X %02X %02X %02X %02X",
          data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8]);
 
 
-    // Vérifier les 10 CRC (un tous les 3 octets : 2 data + 1 crc, ×2 mots par float)
+    // Check the 10 CRCs (one every 3 bytes: 2 data + 1 crc, ×2 words per float)
     for (int i = 0; i < 60; i += 3) {
         if (scd41_crc8(&data[i], 2) != data[i+2]) {
             ESP_LOGE(TAG, "SPS30 CRC error at offset %d", i);
@@ -683,7 +683,7 @@ static esp_err_t sps30_measure(float *pm1_0, float *pm2_5, float *pm4_0, float *
         }
     }
 
-    // Ordre des floats : PM1.0, PM2.5, PM4.0, PM10, puis nombre de particules (ignoré ici), puis typical size
+    // Float order: PM1.0, PM2.5, PM4.0, PM10, then particle counts (ignored here), then typical size
     *pm1_0 = sps30_words_to_float(&data[0]);
     *pm2_5 = sps30_words_to_float(&data[6]);
     *pm4_0 = sps30_words_to_float(&data[12]);
@@ -694,17 +694,17 @@ static esp_err_t sps30_measure(float *pm1_0, float *pm2_5, float *pm4_0, float *
 
 
 // ── SGP41 ─────────────────────────────────────────────────────
-// ATTENTION : ce driver lit les signaux BRUTS (SRAW_VOC / SRAW_NOX).
-// Ce ne sont PAS des index VOC/NOx utilisables tels quels — Sensirion
-// exige de les faire passer par son "Gas Index Algorithm" (bibliothèque
-// C dédiée, stateful, avec calibration adaptative dans le temps) pour
-// produire un index 0-500 comparable dans le temps. Sans cet algorithme,
-// publier ces valeurs comme "VOC index" serait trompeur — elles dérivent
-// avec la température/humidité ambiante et n'ont aucune échelle absolue
+// WARNING: this driver reads the RAW signals (SRAW_VOC / SRAW_NOX).
+// They are NOT VOC/NOx indexes usable as they are: Sensirion
+// requires passing them through its "Gas Index Algorithm" (a dedicated,
+// stateful C library with adaptive calibration over time) to
+// produce a 0-500 index comparable over time. Without this algorithm,
+// publishing these values as a "VOC index" would be misleading: they drift
+// with ambient temperature/humidity and have no absolute scale
 // stable. Voir https://github.com/Sensirion/gas-index-algorithm
-// Décision architecturale : appliquer cet algorithme côté Pi (Python),
-// cohérent avec le principe déjà établi pour la calibration NILM
-// (calcul server-side, jamais en dur dans le firmware).
+// Design decision: apply this algorithm on the Pi (Python),
+// consistent with the principle already set for the NILM calibration
+// (computed server side, never hard-coded in the firmware).
 
 static bool s_sgp41_ready = false;
 static bool s_sgp41_conditioned = false;
@@ -712,7 +712,7 @@ static int64_t s_sgp41_init_time_us = 0;
 
 static esp_err_t sgp41_init(void)
 {
-    // Get serial number (0x3682) pour confirmer présence
+    // Get serial number (0x3682) to confirm presence
     uint8_t cmd[2] = {0x36, 0x82};
     uint8_t resp[9];
     esp_err_t ret = i2c_write_read(I2C_SGP41_ADDR, cmd, 2, resp, 9);
@@ -727,7 +727,7 @@ static esp_err_t sgp41_init(void)
     return ESP_OK;
 }
 
-// Compensated raw signals — requiert T/H ambiante en entrée
+// Compensated raw signals: needs the ambient T/H as input
 static esp_err_t sgp41_measure_raw(float rh_pct, float temp_c, uint16_t *sraw_voc, uint16_t *sraw_nox)
 {
     if (!s_sgp41_ready) return ESP_ERR_INVALID_STATE;
@@ -735,9 +735,9 @@ static esp_err_t sgp41_measure_raw(float rh_pct, float temp_c, uint16_t *sraw_vo
     uint16_t rh_ticks   = (uint16_t)((rh_pct / 100.0f) * 65535.0f);
     uint16_t temp_ticks = (uint16_t)(((temp_c + 45.0f) / 175.0f) * 65535.0f);
 
-    // Phase de conditionnement obligatoire : 10s après power-on, SGP41 doit
-    // tourner en mode "conditioning" (0x2612) avant la première mesure combinée
-    // (0x2619). Sauter cette étape donne des SRAW_VOC non fiables au démarrage.
+    // Mandatory conditioning phase: for 10 s after power-on, the SGP41 must
+    // run in "conditioning" mode (0x2612) before the first combined measurement
+    // (0x2619). Skipping this step gives unreliable SRAW_VOC at start-up.
     if (!s_sgp41_conditioned) {
         int64_t elapsed_us = esp_timer_get_time() - s_sgp41_init_time_us;
         if (elapsed_us < 10000000) {
@@ -745,13 +745,13 @@ static esp_err_t sgp41_measure_raw(float rh_pct, float temp_c, uint16_t *sraw_vo
             cbuf[4] = scd41_crc8(&cbuf[2], 2);
             i2c_write(I2C_SGP41_ADDR, cbuf, 5);
             vTaskDelay(pdMS_TO_TICKS(50));
-            return ESP_ERR_NOT_FINISHED; // encore en conditionnement, pas de mesure valide
+            return ESP_ERR_NOT_FINISHED; // still conditioning, no valid measurement
         }
         s_sgp41_conditioned = true;
         ESP_LOGI(TAG, "SGP41 conditioning done — starting compensated measurements");
     }
 
-    // Measure raw signals compensés (0x2619)
+    // Measure the compensated raw signals (0x2619)
     uint8_t buf[8];
     buf[0] = 0x26; buf[1] = 0x19;
     buf[2] = (uint8_t)(rh_ticks >> 8);   buf[3] = (uint8_t)rh_ticks;
@@ -836,7 +836,7 @@ esp_err_t sensors_init(void)
     ret = i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) return ret;
 
-    // Init capteurs (non-fatal si absent)
+    // Sensor init (not fatal if absent)
     return sensors_discover_and_init();
 }
 
@@ -876,9 +876,9 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
     }
 
     if (data.sgp41_ok) {
-        // Signaux BRUTS non calibrés — nommage explicite volontaire.
-        // Ne PAS renommer en "voc_index"/"nox_index" tant que le Gas Index
-        // Algorithm Sensirion n'est pas appliqué côté Pi.
+        // RAW, uncalibrated signals: explicit naming on purpose.
+        // Do NOT rename to "voc_index"/"nox_index" until Sensirion's Gas Index
+        // Algorithm is applied on the Pi.
         cJSON_AddNumberToObject(payload, "voc_raw", data.voc_raw);
         cJSON_AddNumberToObject(payload, "nox_raw", data.nox_raw);
     }
@@ -900,7 +900,7 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
     cJSON_AddStringToObject(payload, "hw_model",
         hw_model[0] ? hw_model : "esp32c3");
 
-    // ── active_sensors (filtrable dans InfluxDB) ──────────────────
+    // ── active_sensors (filterable in InfluxDB) ──────────────────
     char active_sensors[96] = {0};
     if (data.scd41_ok)  strncat(active_sensors, "scd41,",  sizeof(active_sensors)-1);
     if (data.bme688_ok) strncat(active_sensors, "bme688,", sizeof(active_sensors)-1);
@@ -908,7 +908,7 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
     if (data.sht40_ok)  strncat(active_sensors, "sht40,",  sizeof(active_sensors)-1);
     if (data.sps30_ok)  strncat(active_sensors, "sps30,",  sizeof(active_sensors)-1);
     if (data.sgp41_ok)  strncat(active_sensors, "sgp41,",  sizeof(active_sensors)-1);
-    // Supprimer la virgule finale
+    // Remove the trailing comma
     size_t slen = strlen(active_sensors);
     if (slen > 0 && active_sensors[slen-1] == ',')
         active_sensors[slen-1] = '\0';

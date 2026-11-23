@@ -7,7 +7,7 @@ sdkconfig.old
 *.map
 
 
-# Secrets - ne JAMAIS committer
+# Secrets: NEVER commit
 wifi_secrets.env
 *secrets*
 nvs_config.csv

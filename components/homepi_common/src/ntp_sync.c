@@ -1,4 +1,4 @@
-// main/ntp_sync.c
+// components/homepi_common/src/ntp_sync.c
 #include <inttypes.h>
 #include "ntp_sync.h"
 #include "esp_log.h"
@@ -17,12 +17,14 @@ esp_err_t ntp_sync_wait(uint32_t timeout_ms)
 {
     ntp_events = xEventGroupCreate();
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "192.168.200.1");  // Pi - NTP local VLAN IoT
-    esp_sntp_setservername(1, "192.168.0.1");    // Routeur LAN - fallback
+    // The Pi only: the IoT network has no route to the LAN or to an outside NTP server
+    // (nftables), and keeping time local keeps the devices off the Internet. The former
+    // fallback to the LAN router (192.168.0.1) could never be reached from here.
+    esp_sntp_setservername(0, "192.168.200.1");
     sntp_set_time_sync_notification_cb(ntp_callback);
     esp_sntp_init();
 
-    // Retry loop — 3 tentatives de 10s
+    // Retry loop: 3 attempts of 10 s
     for (int attempt = 0; attempt < 3; attempt++) {
         EventBits_t bits = xEventGroupWaitBits(
             ntp_events, NTP_SYNCED_BIT, pdFALSE, pdFALSE,

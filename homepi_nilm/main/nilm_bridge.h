@@ -1,15 +1,15 @@
 // main/nilm_bridge.h
 //
-// Pont UART -> MQTT pour la carte NILM (Teensy 4.0 -> XIAO ESP32-S3).
-// Réutilise l'infrastructure d'enrollment/mTLS/MQTT existante telle quelle
-// (enrollment.c, mqtt_app.c, nvs_manager.c) — ce module ne fait QUE :
-//   1. Lire en continu les trames binaires envoyées par le Teensy sur UART
-//      (protocole défini côté Teensy dans send_frame(), teensy_nilm_phase2_*.ino)
-//   2. Les parser et les garder en cache (dernière valeur connue)
-//   3. Exposer une fonction de publication MQTT suivant exactement la même
-//      convention que sensors_publish() (JSON plat, topic iot/%s/sensors)
+// UART -> MQTT bridge for the NILM board (Teensy 4.0 -> XIAO ESP32-S3).
+// Reuses the existing enrolment/mTLS/MQTT infrastructure as it is
+// (enrollment.c, mqtt_app.c, nvs_manager.c); this module ONLY:
+//   1. Reads continuously the binary frames sent by the Teensy over UART
+//      (protocol defined on the Teensy side in send_frame(), teensy_nilm_phase2_*.ino)
+//   2. Parses them and keeps them in cache (last known value)
+//   3. Exposes an MQTT publish function following exactly the same
+//      convention as sensors_publish() (flat JSON, topic iot/%s/sensors)
 //
-// Ce device se provisionne comme un device à part entière (son propre
+// This device provisions itself as a device in its own right (its own
 // device_id, son propre enrollment zero-touch) via provision_device.sh /
 // flash_device.sh existants — aucune modification de ces scripts requise.
 #pragma once
@@ -19,9 +19,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// ── Format de trame Teensy (voir send_frame() dans le firmware NILM) ──
+// ── Teensy frame format (see send_frame() in the NILM firmware) ──
 // Header : 0xAA 0x55 0x01 <len>
-// Payload (62 octets, little-endian, tel qu'écrit par le Teensy) :
+// Payload (62 bytes, little-endian, as written by the Teensy):
 //   float    V_rms
 //   float    I1_rms
 //   float    I2_rms
@@ -35,18 +35,18 @@
 //   float    H9
 //   int8_t   event_flag
 //   float    delta_P
-//   uint32_t ts              (millis() côté Teensy — horloge locale, PAS wall-clock)
-//   float    lag_confirmed   (v2.2 — valeur de lag réellement utilisée pour
-//                             les calculs de features, validée par consensus)
-//   float    last_prominence (v2.2 — netteté du dernier pic de corrélation
-//                             tenté, accepté ou non — diagnostic)
-//   uint8_t  consensus_count (v2.2 — 0-3, remplissage de la fenêtre de
-//                             consensus au moment de l'envoi)
-// Suivi d'un CRC8 (poly 0x31, init 0xFF — identique à la fonction crc8()
-// du firmware Teensy, à ne jamais faire diverger des deux côtés).
-// IMPORTANT : ce format DOIT rester synchronisé avec send_frame() côté
-// Teensy — toute modification de l'un sans l'autre invalide silencieusement
-// toutes les trames (rejetées comme "longueur inattendue").
+//   uint32_t ts              (millis() on the Teensy: local clock, NOT wall clock)
+//   float    lag_confirmed   (v2.2: lag value actually used for
+//                             the feature computations, validated by consensus)
+//   float    last_prominence (v2.2: sharpness of the last correlation peak
+//                             tried, accepted or not; diagnostics)
+//   uint8_t  consensus_count (v2.2: 0-3, filling of the consensus window
+//                             when the frame is sent)
+// Followed by a CRC8 (poly 0x31, init 0xFF, identical to the crc8() function
+// of the Teensy firmware; never let the two sides diverge).
+// IMPORTANT: this format MUST stay in sync with send_frame() on the
+// Teensy side; any change to one without the other silently invalidates
+// every frame (rejected as "unexpected length").
 #define NILM_FRAME_HEADER_LEN   4
 #define NILM_FRAME_PAYLOAD_LEN  62
 #define NILM_FRAME_CRC_LEN      1
@@ -58,35 +58,35 @@ typedef struct {
     float    THD, H3, H5, H7, H9;
     int8_t   event_flag;
     float    delta_P;
-    uint32_t teensy_ts_ms;   // horloge locale Teensy, pas wall-clock ESP32
+    uint32_t teensy_ts_ms;   // local Teensy clock, not the ESP32 wall clock
     float    lag_confirmed;    // v2.2
     float    last_prominence;  // v2.2
     uint8_t  consensus_count;  // v2.2 — 0-3
-    bool     valid;          // false tant qu'aucune trame valide n'a été reçue
+    bool     valid;          // false until a valid frame has been received
     uint32_t frames_ok;      // compteur diagnostic
     uint32_t frames_crc_err; // compteur diagnostic
 } nilm_reading_t;
 
-// Initialise l'UART (RX depuis Teensy Serial1 TX) et démarre la tâche de
-// lecture/parsing en tâche de fond. À appeler une fois au boot, comme
-// sensors_init() — indépendant de l'état WiFi/enrollment/MQTT.
+// Initialises the UART (RX from Teensy Serial1 TX) and starts the
+// read/parse task in the background. Call once at boot, like
+// sensors_init(); independent of the Wi-Fi/enrolment/MQTT state.
 esp_err_t nilm_bridge_init(void);
 
-// Recopie la dernière lecture valide dans *out. Retourne ESP_ERR_INVALID_STATE
-// si aucune trame n'a encore été reçue depuis le boot.
+// Copies the last valid reading into *out. Returns ESP_ERR_INVALID_STATE
+// if no frame has been received since boot.
 esp_err_t nilm_bridge_get_latest(nilm_reading_t *out);
 
-// Publie la dernière lecture sur le topic sensors MQTT du device, avec
-// exactement la même convention JSON plate que sensors_publish() (voir
-// sensors.c). À appeler depuis la boucle principale, comme
+// Publishes the last reading on the device's MQTT sensors topic, with
+// exactly the same flat JSON convention as sensors_publish() (see
+// sensors.c). Call from the main loop, like
 // mqtt_app_publish_sensors().
 esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
                                const char *device_id,
                                const char *topic_sensors);
 
-// true si un événement de charge (event_flag != 0) est présent dans la
-// dernière trame reçue — permet à la boucle principale de déclencher une
-// publication immédiate plutôt que d'attendre le prochain tick périodique
-// (un événement de charge ne doit pas attendre jusqu'à 30s pour apparaître
-// sur le dashboard).
+// true if a load event (event_flag != 0) is present in the
+// last frame received: lets the main loop trigger an
+// immediate publish rather than wait for the next periodic tick
+// (a load event must not wait up to 30 s to appear
+// on the dashboard).
 bool nilm_bridge_has_pending_event(void);

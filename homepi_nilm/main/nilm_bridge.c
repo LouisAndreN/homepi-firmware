@@ -16,20 +16,20 @@
 static const char *TAG = "nilm_bridge";
 
 // ── Configuration UART ──────────────────────────────────────────
-// À ajuster selon le câblage réel XIAO ESP32-S3 <-> Teensy Serial1.
-// Le Teensy émet à 921600 bauds (voir Serial1.begin(921600) dans le
-// firmware NILM) — ces deux valeurs doivent rester synchronisées.
+// Adjust to the real XIAO ESP32-S3 <-> Teensy Serial1 wiring.
+// The Teensy sends at 921600 baud (see Serial1.begin(921600) in the
+// NILM firmware): these two values must stay in sync.
 #define NILM_UART_PORT      UART_NUM_1
 #define NILM_UART_BAUD      921600
-#define NILM_UART_RX_PIN    44   // GPIO RX du XIAO ESP32-S3 — À VÉRIFIER
-                                 // selon le brochage réel de la carte
-#define NILM_UART_TX_PIN    UART_PIN_NO_CHANGE // non utilisé, Teensy->ESP32 uniquement
+#define NILM_UART_RX_PIN    44   // RX GPIO of the XIAO ESP32-S3: TO CHECK
+                                 // against the real pinout of the board (open item)
+#define NILM_UART_TX_PIN    UART_PIN_NO_CHANGE // unused, Teensy->ESP32 only
 #define NILM_UART_RX_BUF_SZ 2048
 
-// CRC8 — DOIT rester identique bit-à-bit à la fonction crc8() du firmware
-// Teensy (polynôme 0x31, init 0xFF). Ne jamais faire diverger les deux
-// implémentations : un changement d'un côté sans l'autre invaliderait
-// silencieusement toutes les trames (rejetées comme corrompues).
+// CRC8: MUST stay bit-for-bit identical to the crc8() function of the
+// Teensy firmware (polynomial 0x31, init 0xFF). Never let the two
+// implementations diverge: a change on one side without the other would
+// silently invalidate every frame (rejected as corrupted).
 static uint8_t crc8(const uint8_t *d, int n)
 {
     uint8_t crc = 0xFF;
@@ -41,11 +41,11 @@ static uint8_t crc8(const uint8_t *d, int n)
     return crc;
 }
 
-// ── État partagé (dernière lecture valide) ──────────────────────
+// ── Shared state (last valid reading) ──────────────────────
 static nilm_reading_t s_latest = {0};
 static SemaphoreHandle_t s_mutex = NULL;
 
-// ── Parsing d'un buffer payload validé (CRC déjà vérifié) ───────
+// ── Parsing of a validated payload buffer (CRC already checked) ───────
 static void parse_payload(const uint8_t *p)
 {
     nilm_reading_t r = {0};
@@ -68,9 +68,9 @@ static void parse_payload(const uint8_t *p)
     memcpy(&r.lag_confirmed,   p + idx, 4); idx += 4;
     memcpy(&r.last_prominence, p + idx, 4); idx += 4;
     r.consensus_count = p[idx]; idx += 1;
-    // idx doit valoir NILM_FRAME_PAYLOAD_LEN (62) ici — pas vérifié à
-    // l'exécution pour rester léger, cohérence garantie par construction
-    // (constantes calculées une fois, voir nilm_bridge.h).
+    // idx must equal NILM_FRAME_PAYLOAD_LEN (62) here; not checked at
+    // run time to stay light, consistency guaranteed by construction
+    // (constants computed once, see nilm_bridge.h).
 
     r.valid = true;
 
@@ -83,12 +83,12 @@ static void parse_payload(const uint8_t *p)
     xSemaphoreGive(s_mutex);
 }
 
-// ── Tâche de lecture UART : machine à états sur le flux d'octets ─
-// Ne fait confiance à AUCUNE hypothèse d'alignement — resynchronise sur
-// le header (0xAA 0x55 0x01) à chaque octet tant qu'une trame complète et
-// valide (CRC correct) n'a pas été trouvée. C'est nécessaire car un
-// redémarrage de l'un ou l'autre device peut couper le flux en plein
-// milieu d'une trame, et le point de reprise doit être robuste sans
+// ── UART read task: state machine on the byte stream ─
+// Trusts NO alignment assumption: resynchronises on
+// the header (0xAA 0x55 0x01) at every byte until a complete and
+// valid frame (correct CRC) has been found. This is needed because a
+// restart of either device can cut the stream in the
+// middle of a frame, and the resume point must be robust without
 // intervention manuelle.
 static void uart_rx_task(void *arg)
 {
@@ -100,7 +100,7 @@ static void uart_rx_task(void *arg)
 
     while (1) {
         int n = uart_read_bytes(NILM_UART_PORT, &byte, 1, pdMS_TO_TICKS(1000));
-        if (n <= 0) continue; // timeout — pas de données, on reboucle
+        if (n <= 0) continue; // timeout: no data, loop again
 
         switch (state) {
             case WAIT_0xAA:
@@ -115,11 +115,11 @@ static void uart_rx_task(void *arg)
             case WAIT_LEN:
                 declared_len = byte;
                 if (declared_len != NILM_FRAME_PAYLOAD_LEN) {
-                    // Longueur inattendue -> probablement une resynchronisation
-                    // en plein milieu d'un flux, pas une vraie trame. On
-                    // repart de zéro plutôt que de risquer de lire un payload
-                    // mal aligné.
-                    ESP_LOGW(TAG, "Longueur de trame inattendue: %d (attendu %d)",
+                    // Unexpected length -> probably a resynchronisation
+                    // in the middle of a stream, not a real frame. Start
+                    // again from zero rather than risk reading a misaligned
+                    // payload.
+                    ESP_LOGW(TAG, "Unexpected frame length: %d (expected %d)",
                              declared_len, NILM_FRAME_PAYLOAD_LEN);
                     state = WAIT_0xAA;
                 } else {
@@ -139,7 +139,7 @@ static void uart_rx_task(void *arg)
                     xSemaphoreTake(s_mutex, portMAX_DELAY);
                     s_latest.frames_crc_err++;
                     xSemaphoreGive(s_mutex);
-                    ESP_LOGW(TAG, "CRC invalide (reçu=0x%02X attendu=0x%02X) — trame ignorée",
+                    ESP_LOGW(TAG, "Invalid CRC (received=0x%02X expected=0x%02X): frame dropped",
                              byte, expected);
                 }
                 state = WAIT_0xAA;
@@ -174,7 +174,7 @@ esp_err_t nilm_bridge_init(void)
     BaseType_t task_ret = xTaskCreate(uart_rx_task, "nilm_uart_rx", 4096, NULL, 6, NULL);
     if (task_ret != pdPASS) return ESP_ERR_NO_MEM;
 
-    ESP_LOGI(TAG, "NILM bridge UART initialisé (port=%d baud=%d rx_pin=%d)",
+    ESP_LOGI(TAG, "NILM bridge UART initialised (port=%d baud=%d rx_pin=%d)",
              NILM_UART_PORT, NILM_UART_BAUD, NILM_UART_RX_PIN);
     return ESP_OK;
 }
@@ -204,14 +204,14 @@ esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
     nilm_reading_t r;
     esp_err_t ret = nilm_bridge_get_latest(&r);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Aucune trame Teensy reçue depuis le boot — publication annulée");
+        ESP_LOGW(TAG, "No Teensy frame received since boot: publish skipped");
         return ret;
     }
 
     cJSON *payload = cJSON_CreateObject();
-    // ts = horloge murale de l'ESP32 (via NTP), PAS teensy_ts_ms (horloge
-    // locale millis() du Teensy, sans rapport avec le temps réel). On
-    // conserve teensy_ts_ms séparément pour diagnostic/latence uniquement.
+    // ts = wall clock of the ESP32 (via NTP), NOT teensy_ts_ms (the Teensy's
+    // local millis() clock, unrelated to real time). teensy_ts_ms is
+    // kept separately for diagnostics/latency only.
     cJSON_AddNumberToObject(payload, "ts", (double)time(NULL));
 
     cJSON_AddNumberToObject(payload, "V_rms",  roundf(r.V_rms  * 1000.0f) / 1000.0f);
@@ -228,17 +228,17 @@ esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
     cJSON_AddNumberToObject(payload, "event_flag", r.event_flag);
     cJSON_AddNumberToObject(payload, "delta_P", roundf(r.delta_P * 10.0f) / 10.0f);
     cJSON_AddNumberToObject(payload, "teensy_ts_ms", (double)r.teensy_ts_ms);
-    // v2.2 : diagnostic lag/consensus — permet de distinguer un PF fiable
-    // (lag confirmé récemment, prominence nette, fenêtre pleine) d'un PF
-    // calculé sur une référence non encore validée, sans devoir rebrancher
-    // un moniteur série sur le Teensy.
+    // v2.2: lag/consensus diagnostics: tells a reliable PF
+    // (lag recently confirmed, clear prominence, full window) from a PF
+    // computed on a reference not yet validated, without plugging
+    // a serial monitor into the Teensy.
     cJSON_AddNumberToObject(payload, "lag_confirmed",   roundf(r.lag_confirmed * 100.0f) / 100.0f);
     cJSON_AddNumberToObject(payload, "last_prominence", roundf(r.last_prominence * 100.0f) / 100.0f);
     cJSON_AddNumberToObject(payload, "consensus_count", r.consensus_count);
     cJSON_AddNumberToObject(payload, "frames_ok", (double)r.frames_ok);
     cJSON_AddNumberToObject(payload, "frames_crc_err", (double)r.frames_crc_err);
 
-    // ── Champs génériques de flotte, mêmes conventions que sensors.c ──
+    // ── Generic fleet fields, same conventions as sensors.c ──
     wifi_ap_record_t ap_info;
     int rssi = (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) ? ap_info.rssi : 0;
     cJSON_AddNumberToObject(payload, "rssi", rssi);
@@ -250,7 +250,7 @@ esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
 
     char *str = cJSON_PrintUnformatted(payload);
     int msg_id = esp_mqtt_client_publish(client, topic_sensors, str, 0, /*qos*/1, /*retain*/0);
-    ESP_LOGI(TAG, "Publié (msg_id=%d, frames_ok=%lu, crc_err=%lu): P_L1=%.1fW PF=%.3f ev=%d",
+    ESP_LOGI(TAG, "Published (msg_id=%d, frames_ok=%lu, crc_err=%lu): P_L1=%.1fW PF=%.3f ev=%d",
              msg_id, (unsigned long)r.frames_ok, (unsigned long)r.frames_crc_err,
              r.P_L1, r.PF_L1, r.event_flag);
 

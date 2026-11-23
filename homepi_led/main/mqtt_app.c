@@ -26,7 +26,7 @@ static char s_topic_status[128]   = {0};
 static char s_topic_commands[128] = {0};
 
 
-// ── Handlers commandes MQTT ───────────────────────────────────
+// ── MQTT command handlers ───────────────────────────────────
 
 // OTA (homepi_ota). The command carries the signed manifest; it is checked here, while MQTT is up,
 // so that a refused command is reported at once without interrupting the broker session.
@@ -114,7 +114,7 @@ static void handle_update_wifi(cJSON *cmd)
     esp_restart();
 }
 
-// ★ AJOUT — dispatch de la commande de composition LED
+// ★ ADDED: dispatch of the LED composition command
 static void handle_led_composition(cJSON *cmd)
 {
     cJSON *layers = cJSON_GetObjectItem(cmd, "layers");
@@ -340,13 +340,13 @@ esp_err_t mqtt_app_start(void)
     return esp_mqtt_client_start(mqtt_handle);
 }
 
-// ── Publish sensors (INUTILISÉ pour ce device, conservé pour compat header) ──
+// ── Publish sensors (UNUSED for this device, kept for header compatibility) ──
 
 esp_err_t mqtt_app_publish_sensors(void)
 {
-    // ★ Ce device n'a pas de capteurs environnementaux — fonction conservée
-    // vide pour ne pas casser la signature attendue par main.c d'origine,
-    // mais main.c (LED) ne l'appelle plus dans sa boucle principale.
+    // ★ This device has no environmental sensors: the function is kept
+    // empty so as not to break the signature expected by the original main.c,
+    // but main.c (LED) no longer calls it in its main loop.
     return ESP_OK;
 }
 

@@ -13,7 +13,7 @@ static nvs_handle_t h_certs  = 0;
 
 esp_err_t nvs_mgr_init(void)
 {
-    // Initialiser la partition NVS par défaut
+    // Initialise the default NVS partition
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
         ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -23,11 +23,11 @@ esp_err_t nvs_mgr_init(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // Initialiser la partition nvs_certs (jamais effacée)
+    // Initialise the nvs_certs partition (never erased)
     ret = nvs_flash_init_partition("nvs_certs");
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
         ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        // NE PAS effacer nvs_certs — contient les certs
+        // DO NOT erase nvs_certs: it holds the certificates
         ESP_LOGE(TAG, "nvs_certs partition corrupted! Cannot erase.");
         return ret;
     }
@@ -131,8 +131,8 @@ esp_err_t nvs_mgr_set_binary(const char *key, const uint8_t *buf, size_t len)
 
 // ── LDevID A/B swap atomique ──────────────────────────────────
 //
-// Principe : on écrit toujours dans le slot INACTIF, puis on bascule.
-// Si le device redémarre pendant l'écriture → l'ancien slot est toujours valide.
+// Principle: always write to the INACTIVE slot, then switch.
+// If the device restarts during the write, the old slot is still valid.
 //
 // Slot 0 (A) : NVS_KEY_LDEVID_CERT_A / NVS_KEY_LDEVID_KEY_A
 // Slot 1 (B) : NVS_KEY_LDEVID_CERT_B / NVS_KEY_LDEVID_KEY_B
@@ -150,7 +150,7 @@ esp_err_t nvs_mgr_store_ldevid(const char *cert_pem, const char *key_pem)
 
     ESP_LOGI(TAG, "Storing LDevID in slot %d", new_slot);
 
-    // 1. Écrire dans le slot inactif
+    // 1. Write to the inactive slot
     esp_err_t ret = nvs_mgr_set_cert(cert_nvskey, cert_pem);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to write cert to slot %d: %s",
@@ -164,8 +164,8 @@ esp_err_t nvs_mgr_store_ldevid(const char *cert_pem, const char *key_pem)
         return ret;
     }
 
-    // 2. Bascule atomique — si le device redémarre ICI,
-    //    l'ancien slot reste actif (pas de brick)
+    // 2. Atomic switch: if the device restarts HERE,
+    //    the old slot stays active (no brick)
     ret = nvs_mgr_set_u8(NVS_KEY_LDEVID_SLOT, new_slot);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to switch slot: %s", esp_err_to_name(ret));

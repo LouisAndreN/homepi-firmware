@@ -6,8 +6,8 @@
 #include "homepi_identity.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
-#include "nilm_bridge.h"   // NILM : remplace "sensors.h" — ce device n'a
-                           // pas de capteurs I2C, uniquement le pont Teensy
+#include "nilm_bridge.h"   // NILM: replaces "sensors.h"; this device has
+                           // no I2C sensors, only the Teensy bridge
 #include "homepi_ota.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -22,13 +22,13 @@ static const char *TAG = "mqtt";
 esp_mqtt_client_handle_t mqtt_handle = NULL;
 
 static char s_device_id[64]       = {0};
-static char s_topic_nilm[128]      = {0}; // NILM : topic dédié, PAS iot/.../sensors
-                                           // (voir MQTT_TOPIC_NILM dans config.h)
+static char s_topic_nilm[128]      = {0}; // NILM: dedicated topic, NOT iot/.../sensors
+                                           // (see MQTT_TOPIC_NILM in config.h)
 static char s_topic_status[128]   = {0};
 static char s_topic_commands[128] = {0};
 
 
-// ── Handlers commandes MQTT ───────────────────────────────────
+// ── MQTT command handlers ───────────────────────────────────
 
 // OTA (homepi_ota). The command carries the signed manifest; it is checked here, while MQTT is up,
 // so that a refused command is reported at once without interrupting the broker session.
@@ -113,7 +113,7 @@ static void handle_update_wifi(cJSON *cmd)
     ESP_LOGI(TAG, "Applying WiFi update: %s", ssid);
     nvs_mgr_set_string(NVS_KEY_WIFI_SSID, ssid);
     nvs_mgr_set_string(NVS_KEY_WIFI_PASS, pass);
-    // Redémarrer pour appliquer
+    // Restart to apply
     esp_restart();
 }
 
@@ -163,7 +163,7 @@ static void publish_status(bool online)
     cJSON_AddNumberToObject(payload, "heap_largest", (double)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 
     char *str = cJSON_PrintUnformatted(payload);
-    // retain=1 : le broker mémorise le dernier statut
+    // retain=1: the broker keeps the last status
     esp_mqtt_client_publish(mqtt_handle, s_topic_status,
                             str, 0, /*qos*/1, /*retain*/1);
     free(str);
@@ -192,7 +192,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             }
             led_set(LED_OPERATIONAL);
 
-            // S'abonner aux commandes (QoS 1)
+            // Subscribe to commands (QoS 1)
             int sub_ret = esp_mqtt_client_subscribe(
                 mqtt_handle, s_topic_commands, 1);
             if (sub_ret < 0)
@@ -210,7 +210,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             ESP_LOGW(TAG, "Disconnected from broker");
             led_set(LED_ERROR);
             // No re-enrollment here (v2.4.0): an outage is not a revocation; ESP-MQTT reconnects
-            // esp_mqtt_client gère la reconnexion automatiquement
+            // esp_mqtt_client handles reconnection automatically
             break;
 
         case MQTT_EVENT_SUBSCRIBED:
@@ -250,7 +250,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
 
 esp_err_t mqtt_app_start(void)
 {
-    // Charger les credentials depuis NVS
+    // Load the credentials from NVS
     static char root_ca[4096]    = {0};
     static char ldevid_cert[3072]= {0};   // LDevID chain (v2.4.0)
     static char ldevid_key[2048] = {0};
@@ -264,11 +264,11 @@ esp_err_t mqtt_app_start(void)
         ldevid_cert, sizeof(ldevid_cert),
         ldevid_key,  sizeof(ldevid_key)));
 
-    // Construire les topics
-    // NILM : topic dédié nilm/<device_id>/telemetry, distinct de
-    // iot/<device_id>/sensors utilisé par les capteurs environnementaux —
-    // permet à Telegraf de router ces messages vers une mesure InfluxDB
-    // séparée (nilm_readings) sans toucher au pipeline générique existant.
+    // Build the topics
+    // NILM: dedicated topic nilm/<device_id>/telemetry, distinct from
+    // iot/<device_id>/sensors used by the environmental sensors:
+    // lets Telegraf route these messages to a separate InfluxDB measurement
+    // (nilm_readings) without touching the existing generic pipeline.
     snprintf(s_topic_nilm,     sizeof(s_topic_nilm),
              MQTT_TOPIC_NILM,     s_device_id);
     snprintf(s_topic_status,   sizeof(s_topic_status),
@@ -276,7 +276,7 @@ esp_err_t mqtt_app_start(void)
     snprintf(s_topic_commands, sizeof(s_topic_commands),
              MQTT_TOPIC_COMMANDS, s_device_id);
 
-    // LWT — publié automatiquement par le broker si déconnexion brutale
+    // LWT: published automatically by the broker on an abrupt disconnection
     cJSON *lwt_json = cJSON_CreateObject();
     cJSON_AddBoolToObject(lwt_json, "online", false);
     cJSON_AddNumberToObject(lwt_json, "ts", (double)time(NULL));
@@ -296,7 +296,7 @@ esp_err_t mqtt_app_start(void)
                 .transport = MQTT_TRANSPORT_OVER_SSL,
             },
             .verification = {
-                // Valider le cert du broker avec le Root CA
+                // Validate the broker certificate with the root CA
                 .certificate       = root_ca,
                 .certificate_len   = strlen(root_ca) + 1,
                 .skip_cert_common_name_check = false,
@@ -304,11 +304,11 @@ esp_err_t mqtt_app_start(void)
         },
         .credentials = {
             // Client ID = device_id
-            // use_identity_as_username=true côté Mosquitto →
-            // CN du LDevID = username automatique
+            // use_identity_as_username=true on the Mosquitto side ->
+            // LDevID CN = automatic username
             .client_id = s_device_id,
             .authentication = {
-                // LDevID = identité du device
+                // LDevID = device identity
                 .certificate     = ldevid_cert,
                 .certificate_len = strlen(ldevid_cert) + 1,
                 .key             = ldevid_key,
@@ -344,9 +344,9 @@ esp_err_t mqtt_app_start(void)
     return esp_mqtt_client_start(mqtt_handle);
 }
 
-// ── Publish NILM (appelé depuis main loop) ─────────────────────
-// NILM : remplace mqtt_app_publish_sensors() du main.c générique — ce
-// device n'a pas de capteurs I2C, uniquement le pont UART Teensy.
+// ── Publish NILM (called from the main loop) ─────────────────────
+// NILM: replaces mqtt_app_publish_sensors() of the generic main.c; this
+// device has no I2C sensors, only the Teensy UART bridge.
 
 esp_err_t mqtt_app_publish_nilm(void)
 {
@@ -359,8 +359,8 @@ esp_err_t mqtt_app_publish_nilm(void)
 void mqtt_app_stop(void)
 {
     if (!mqtt_handle) return;
-    publish_status(false);          // offline explicite avant déconnexion
-    vTaskDelay(pdMS_TO_TICKS(500)); // laisser le temps au publish
+    publish_status(false);          // explicit offline status before disconnecting
+    vTaskDelay(pdMS_TO_TICKS(500)); // give the publish time to go out
     esp_mqtt_client_stop(mqtt_handle);
     esp_mqtt_client_destroy(mqtt_handle);
     mqtt_handle = NULL;

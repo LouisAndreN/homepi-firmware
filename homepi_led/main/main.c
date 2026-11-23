@@ -131,17 +131,17 @@ static void homepi_main_task(void *arg)
         esp_restart();
     }
 
-    // ── Strip LED — retiré du chemin critique de connexion ──────
-    // Historique : strip_control_init() était appelé ICI (avant enrollment)
-    // par cohérence avec le pattern sensors_init() du firmware capteur.
-    // Diagnostic (tcpdump + test isolé) : led_strip_new_rmt_device() perturbe
-    // le traitement réseau au moment du handshake TLS MQTT — connexion
-    // passant de 8-20s de stall systématique à 1.2s une fois l'init RMT
-    // déplacée après le démarrage de MQTT. Cause exacte encore incertaine
-    // (probable interaction horloge/interruption RMT vs WiFi sur S3, absente
-    // sur C3 qui n'a pas de canal RMT) — a documenter/creuser plus tard,
-    // mais ce réordonnancement règle le symptôme de façon fiable et propre :
-    // le strip n'a aucune raison d'exister avant que MQTT soit opérationnel.
+    // ── LED strip: taken out of the critical connection path ──────
+    // History: strip_control_init() was called HERE (before enrolment)
+    // for consistency with the sensors_init() pattern of the sensor firmware.
+    // Diagnosis (tcpdump + isolated test): led_strip_new_rmt_device() disturbs
+    // network processing during the MQTT TLS handshake: the connection
+    // went from a systematic 8-20 s stall to 1.2 s once the RMT init
+    // was moved after MQTT starts. Exact cause still uncertain
+    // (probably an RMT clock/interrupt interaction with Wi-Fi on the S3, absent
+    // on the C3, which has no RMT channel); to document and dig into later,
+    // but this reordering fixes the symptom reliably and cleanly:
+    // the strip has no reason to exist before MQTT is up.
 
     // ── Identity (homepi_identity, v2.4.0) ────────────────────
     // Enrollment happens only without a usable LDevID (first boot, or expired after a long time
@@ -170,12 +170,12 @@ static void homepi_main_task(void *arg)
     ESP_ERROR_CHECK(mqtt_app_start());
     led_set(LED_OPERATIONAL);
 
-    // ── Strip LED — init APRÈS que MQTT soit établi ─────────────
-    // Le socket TLS/MQTT est déjà up à ce stade ; même si l'init RMT a un
-    // effet transitoire sur les interruptions, il n'y a plus de handshake
-    // en cours pour en souffrir. La tâche de rendu démarre juste après,
-    // le strip affichera sa layer par défaut (blanc, solid) immédiatement,
-    // puis les compositions reçues via MQTT s'appliqueront normalement.
+    // ── LED strip: init AFTER MQTT is established ─────────────
+    // The TLS/MQTT socket is already up at this point; even if the RMT init has a
+    // transient effect on interrupts, there is no handshake
+    // in progress to suffer from it. The render task starts right after;
+    // the strip shows its default layer (white, solid) immediately,
+    // then the compositions received over MQTT apply normally.
     esp_err_t strip_ret = strip_control_init();
     if (strip_ret != ESP_OK) {
         ESP_LOGE(TAG, "Strip init failed (%s) — device continue quand meme",
@@ -184,7 +184,7 @@ static void homepi_main_task(void *arg)
         strip_control_task_start();
     }
 
-    // ── Boucle principale ─────────────────────────────────────
+    // ── Main loop ─────────────────────────────────────
     int64_t last_identity_check = esp_timer_get_time();
     int64_t last_heartbeat = esp_timer_get_time();
 

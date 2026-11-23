@@ -1,4 +1,4 @@
-// main/led.c
+// components/homepi_common/src/led.c
 #include "led.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -33,7 +33,7 @@ static inline void led_off(int ms) {
     vTaskDelay(ms / portTICK_PERIOD_MS);
 }
 
-// N blinks rapides (on_ms allumé, off_ms éteint) puis pause_ms
+// N quick blinks (on_ms on, off_ms off), then pause_ms
 static void blinks(int n, int on_ms, int off_ms, int pause_ms) {
     for (int i = 0; i < n; i++) {
         led_on(on_ms);
@@ -42,7 +42,7 @@ static void blinks(int n, int on_ms, int off_ms, int pause_ms) {
     led_off(pause_ms);
 }
 
-// ── Task principale ───────────────────────────────────────────
+// ── Main task ───────────────────────────────────────────
 
 static void led_task(void *arg) {
     while (1) {
@@ -74,7 +74,7 @@ static void led_task(void *arg) {
             break;
 
         case LED_FALLBACK_WAIT:
-            // blink lent — "attends une action humaine"
+            // slow blink: "waiting for a human action"
             led_on(800);
             led_off(800);
             break;

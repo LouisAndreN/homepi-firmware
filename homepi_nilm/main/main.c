@@ -1,14 +1,14 @@
 // main/main.c — variante NILM (device pont Teensy -> MQTT)
 //
-// Copie adaptée du main.c générique des capteurs HomePi. Réutilise TOUT
-// le socle existant (WiFi, NTP, enrollment zero-touch, MQTT mTLS) sans
-// aucune modification — seules les lignes marquées "NILM" changent :
+// Adapted copy of the generic HomePi sensor main.c. Reuses ALL
+// the existing base (Wi-Fi, NTP, zero-touch enrolment, MQTT mTLS) without
+// any change; only the lines marked "NILM" differ:
 //   - sensors_init()            -> nilm_bridge_init()
 //   - mqtt_app_publish_sensors() -> nilm_bridge_publish(...)
-//   - SENSOR_PUBLISH_INTERVAL (30s, pensé pour de la température) est
-//     remplacé par un intervalle court dédié + publication immédiate sur
-//     événement de charge (un démarrage/arrêt d'appareil ne doit pas
-//     attendre jusqu'à 30s avant d'apparaître sur le dashboard).
+//   - SENSOR_PUBLISH_INTERVAL (30 s, meant for temperature) is
+//     replaced by a dedicated short interval + immediate publish on a
+//     load event (an appliance starting or stopping must not
+//     wait up to 30 s before showing on the dashboard).
 #include "esp_sleep.h"
 #include "nvs_manager.h"
 #include "led.h"
@@ -49,9 +49,9 @@ static bool ota_pending_verify(void)
            state == ESP_OTA_IMG_PENDING_VERIFY;
 }
 
-// NILM : intervalle de publication périodique court, distinct de
-// SENSOR_PUBLISH_INTERVAL (config.h, 30s — conçu pour de la télémétrie
-// environnementale lente, pas pour du suivi de charge électrique).
+// NILM: short periodic publish interval, distinct from
+// SENSOR_PUBLISH_INTERVAL (config.h, 30 s, designed for slow environmental
+// telemetry, not for tracking an electrical load).
 #define NILM_PUBLISH_INTERVAL_MS  1500
 
 static void wifi_event_handler(void *arg, esp_event_base_t base,
@@ -140,12 +140,12 @@ static void homepi_main_task(void *arg)
     }
 
     // ── NILM bridge (UART Teensy) — AVANT enrollment ───────────
-    // Même raisonnement que sensors_init() dans le main.c générique :
-    // notify_api_enrolled() lit hw_model/capabilities depuis NVS pour
-    // construire le payload d'enrollment, donc ce qui doit y figurer doit
-    // être prêt avant. Contrairement aux capteurs I2C, nilm_bridge_init()
-    // ne "découvre" rien de façon synchrone (la tâche UART tourne en
-    // fond et se remplit progressivement) — non-bloquant par nature, donc
+    // Same reasoning as sensors_init() in the generic main.c:
+    // notify_api_enrolled() reads hw_model/capabilities from NVS to
+    // build the enrolment payload, so what must be in it must
+    // be ready before. Unlike the I2C sensors, nilm_bridge_init()
+    // "discovers" nothing synchronously (the UART task runs in the
+    // background and fills up gradually): non-blocking by nature, so
     // aucun risque de retarder l'enrollment.
     esp_err_t nilm_ret = nilm_bridge_init();
     if (nilm_ret != ESP_OK) {
@@ -181,11 +181,11 @@ static void homepi_main_task(void *arg)
     ESP_ERROR_CHECK(mqtt_app_start());
     led_set(LED_OPERATIONAL);
 
-    // ── Boucle principale ─────────────────────────────────────
-    // NILM : publication périodique courte (1.5s, pas 30s) + publication
-    // immédiate hors-cadence dès qu'un événement de charge est présent
-    // dans la dernière trame reçue, pour que le dashboard voie les
-    // démarrages/arrêts d'appareils sans latence artificielle.
+    // ── Main loop ─────────────────────────────────────
+    // NILM: short periodic publish (1.5 s, not 30 s) + an immediate
+    // off-cycle publish as soon as a load event is present
+    // in the last frame received, so that the dashboard sees
+    // appliances starting/stopping without artificial latency.
     TickType_t last_publish = xTaskGetTickCount();
     int64_t last_identity_check = esp_timer_get_time();
     bool       last_event_state = false;
@@ -196,17 +196,17 @@ static void homepi_main_task(void *arg)
         TickType_t now = xTaskGetTickCount();
         bool has_event = nilm_bridge_has_pending_event();
 
-        // Publication immédiate sur transition idle -> événement, en plus
-        // du rythme périodique normal (évite de spammer le broker si
-        // l'event_flag reste à 1 sur plusieurs cycles consécutifs — une
-        // seule publication "hors-cadence" par transition, le reste suit
-        // le rythme périodique habituel).
+        // Immediate publish on an idle -> event transition, in addition
+        // to the normal periodic rhythm (avoids spamming the broker if
+        // event_flag stays at 1 over several consecutive cycles: a
+        // single "off-cycle" publish per transition, the rest follows
+        // the usual periodic rhythm).
         bool event_rising_edge = has_event && !last_event_state;
         last_event_state = has_event;
 
         if (event_rising_edge ||
             (now - last_publish) >= pdMS_TO_TICKS(NILM_PUBLISH_INTERVAL_MS)) {
-            mqtt_app_publish_nilm(); // wrapper dans mqtt_app.c, voir patch fourni
+            mqtt_app_publish_nilm(); // wrapper in mqtt_app.c, see the provided patch
             last_publish = now;
         }
 
@@ -227,9 +227,9 @@ static void homepi_main_task(void *arg)
             esp_restart();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100)); // tick plus court que le main.c
-                                        // générique (100ms vs 1000ms) pour
-                                        // réagir vite à un event_flag
+        vTaskDelay(pdMS_TO_TICKS(100)); // shorter tick than the generic
+                                        // main.c (100ms vs 1000ms) to
+                                        // react quickly to an event_flag
     }
     vTaskDelete(NULL);
 }

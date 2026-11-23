@@ -110,9 +110,9 @@ static void homepi_main_task(void *arg)
     led_set(LED_BOOT);
 
     // ── Rollback cancel — OBLIGATOIRE ─────────────────────────
-    // Si on arrive ici, le firmware a booté correctement.
-    // Sans cet appel, CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
-    // va rebooter sur l'ancien firmware au prochain watchdog.
+    // If we get here, the firmware booted correctly.
+    // Without this call, CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    // reboots into the old firmware at the next watchdog.
     // esp_ota_mark_app_valid_cancel_rollback();
     // ESP_LOGI(TAG, "Firmware valid — rollback cancelled");
 
@@ -141,14 +141,14 @@ static void homepi_main_task(void *arg)
     }
 
     // ── Sensors I2C — AVANT enrollment ─────────────────────────
-    // Doit s'exécuter avant enrollment_zero_touch()/enrollment_fallback() :
-    // notify_api_enrolled() (appelée à l'intérieur de ces deux fonctions) lit
-    // hw_model/capabilities depuis NVS pour construire le payload envoyé à
-    // l'API. Si les capteurs ne sont pas encore découverts à ce moment-là,
-    // ces champs NVS contiennent encore leur valeur par défaut du flash
-    // (ex: "esp32c3" générique depuis generate_nvs.py, ou vide), jamais la
-    // vraie combinaison de capteurs détectés — d'où hw_model incorrect ou
-    // vide dans devices.db malgré un enrollment par ailleurs réussi.
+    // Must run before enrollment_zero_touch()/enrollment_fallback():
+    // notify_api_enrolled() (called inside these two functions) reads
+    // hw_model/capabilities from NVS to build the payload sent to
+    // the API. If the sensors are not discovered yet at that point,
+    // these NVS fields still hold their default value from flashing
+    // (e.g. a generic "esp32c3" written at provisioning, or empty), never the
+    // real combination of detected sensors: hence a wrong or
+    // empty hw_model in devices.db despite an otherwise successful enrolment.
     // ESP_ERROR_CHECK(sensors_init());
     esp_err_t sensors_ret = sensors_init();
     if (sensors_ret != ESP_OK) {
@@ -187,11 +187,11 @@ static void homepi_main_task(void *arg)
 #endif
     led_set(LED_OPERATIONAL);
 
-    // Sensors déjà initialisés plus haut (avant enrollment) — pas de second
-    // appel ici, sensors_init()/sensors_discover_and_init() ne doit être
-    // exécuté qu'une seule fois par boot.
+    // Sensors already initialised above (before enrolment): no second
+    // call here; sensors_init()/sensors_discover_and_init() must run
+    // only once per boot.
 
-    // ── Boucle principale ─────────────────────────────────────
+    // ── Main loop ─────────────────────────────────────
     TickType_t last_publish = xTaskGetTickCount();
     int64_t last_identity_check = esp_timer_get_time();
 
@@ -224,7 +224,7 @@ static void homepi_main_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-    // Ne jamais atteindre ici
+    // Never reached
     vTaskDelete(NULL);
 }
 
@@ -238,8 +238,8 @@ void app_main(void)
         // 16 KB keeps 4x that for the paths not yet measured on this task (OTA download since v2.4.2,
         // LDevID renewal at boot); stack_main_free stays in the telemetry to check them.
         16384,
-        NULL,               // paramètre
-        5,                  // priorité
-        NULL                // handle (pas besoin)
+        NULL,               // parameter
+        5,                  // priority
+        NULL                // handle (not needed)
     );
 }

@@ -15,10 +15,10 @@ typedef struct {
     float    pm2_5;
     float    pm4_0;
     float    pm10;
-    uint16_t voc_raw;   // SRAW_VOC brut — PAS un index utilisable tel quel
+    uint16_t voc_raw;   // raw SRAW_VOC: NOT an index usable as it is
     uint16_t nox_raw;   // SRAW_NOX brut — idem
     int8_t   rssi;
-    // Flags de présence
+    // Presence flags
     bool     scd41_ok;
     bool     bme688_ok;
     bool     bh1750_ok;
@@ -38,15 +38,15 @@ esp_err_t sensors_publish(esp_mqtt_client_handle_t client,
                            const char *device_id,
                            const char *topic);
 
-// Discovery + init combinés — SEULE fonction à appeler au boot
+// Discovery + init combined: the ONLY function to call at boot
 esp_err_t sensors_discover_and_init(void);
 
-// Lecture de tous les capteurs actifs
+// Read all active sensors
 esp_err_t sensors_read_all(sensor_data_t *out);
 
-// Capabilities découvertes (pour enrollment payload)
+// Discovered capabilities (for the enrolment payload)
 // ex: "co2,temperature,humidity,lux"
 const char *sensors_get_capabilities_csv(void);
 
-// hw_model dérivé (ex: "bh1750+scd41")
+// derived hw_model (e.g. "bh1750+scd41")
 const char *sensors_get_hw_model(void);

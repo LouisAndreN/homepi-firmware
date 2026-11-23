@@ -36,14 +36,14 @@ static layer_t s_layers[STRIP_MAX_LAYERS];
 static int s_layer_count = 0;
 
 // ── Mutex FreeRTOS — remplace l'ancienne portENTER_CRITICAL/portEXIT_CRITICAL.
-// Raison du changement : une critical section désactive les interruptions et
-// suspend le scheduler sur le cœur courant. cJSON_ArrayForEach() a une durée
-// non bornée (dépend de la taille du payload MQTT) — y appeler quoi que ce
-// soit qui tente d'acquérir un verrou (ESP_LOGI -> vprintf -> lock newlib)
-// provoque un abort() immédiat (lock_acquire_generic détecte l'incohérence).
-// Un mutex FreeRTOS classique n'a pas cette contrainte : il bloque la tâche
-// appelante sans couper les interruptions globales, donc compatible avec du
-// parsing JSON et du logging à l'intérieur de la zone protégée.
+// Reason for the change: a critical section disables interrupts and
+// suspends the scheduler on the current core. cJSON_ArrayForEach() has an unbounded
+// duration (it depends on the MQTT payload size): calling anything in it
+// that tries to take a lock (ESP_LOGI -> vprintf -> newlib lock)
+// causes an immediate abort() (lock_acquire_generic detects the inconsistency).
+// A plain FreeRTOS mutex has no such constraint: it blocks the calling
+// task without disabling global interrupts, so it is compatible with
+// JSON parsing and logging inside the protected section.
 static SemaphoreHandle_t s_layer_mutex = NULL;
 
 static void hsv_to_rgb(float h, float s, float v, uint8_t *r, uint8_t *g, uint8_t *b)
@@ -75,7 +75,7 @@ static pattern_t parse_pattern(const char *s)
 void strip_control_apply_composition(cJSON *layers_json)
 {
     if (!layers_json) {
-        ESP_LOGW(TAG, "Composition recue sans champ 'layers'");
+        ESP_LOGW(TAG, "Composition received without a 'layers' field");
         return;
     }
 
@@ -84,11 +84,11 @@ void strip_control_apply_composition(cJSON *layers_json)
         return;
     }
 
-    // Buffer de parsing temporaire — on construit la nouvelle composition
-    // ICI, hors verrou, puis on ne prend le mutex que pour la copie finale
-    // (memcpy quasi-instantanee). Ca minimise la durée de possession du
-    // verrou par la tache MQTT, donc le risque de faire attendre strip_task
-    // (rendu 50fps sur Core 1) est quasi nul.
+    // Temporary parsing buffer: the new composition is built
+    // HERE, outside the lock, and the mutex is taken only for the final copy
+    // (a nearly instant memcpy). This minimises how long the MQTT task holds
+    // the lock, so the risk of making strip_task wait
+    // (50 fps rendering on core 1) is close to zero.
     static layer_t parse_buf[STRIP_MAX_LAYERS];
     int parsed_count = 0;
 
@@ -143,15 +143,15 @@ void strip_control_apply_composition(cJSON *layers_json)
         parsed_count++;
     }
 
-    // Log de diagnostic — HORS de toute section protégée, sur le buffer local.
-    // Safe : parse_buf est 'static' donc pas de risque de pointer sur la pile.
+    // Diagnostic log: OUTSIDE any protected section, on the local buffer.
+    // Safe: parse_buf is 'static', so there is no risk of pointing into the stack.
     for (int i = 0; i < parsed_count; i++) {
         ESP_LOGI(TAG, "Layer %d: pattern=%d direction=%d speed=%.2f replace_below=%d",
                  i, parse_buf[i].pattern, parse_buf[i].direction,
                  parse_buf[i].speed, parse_buf[i].replace_below);
     }
 
-    // Copie finale sous mutex — rapide, pas de logging ni d'allocation ici.
+    // Final copy under the mutex: fast, no logging or allocation here.
     if (xSemaphoreTake(s_layer_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         memcpy(s_layers, parse_buf, sizeof(layer_t) * parsed_count);
         s_layer_count = parsed_count;
@@ -211,10 +211,10 @@ static void render_layer(layer_t *l, uint32_t *r_out, uint32_t *g_out, uint32_t 
 
 static void render_and_show(float dt)
 {
-    // Lecture protégée par mutex — timeout court car on ne doit jamais
-    // bloquer le rendu 50fps en attente d'une composition MQTT.
-    // Si le verrou n'est pas dispo (composition en cours d'application),
-    // on rend la frame précédente plutôt que de rater un cycle complet.
+    // Read protected by the mutex: short timeout because the 50 fps rendering
+    // must never block waiting for an MQTT composition.
+    // If the lock is not available (a composition is being applied),
+    // render the previous frame rather than miss a whole cycle.
     if (xSemaphoreTake(s_layer_mutex, 0) == pdTRUE) {
         for (int i = 0; i < STRIP_NUM_LEDS; i++) {
             uint32_t r = 0, g = 0, b = 0;
@@ -226,7 +226,7 @@ static void render_and_show(float dt)
             if (r > 255) r = 255;
             if (g > 255) g = 255;
             if (b > 255) b = 255;
-            led_strip_set_pixel(s_strip, i, g, r, b);   // swap R/G pour ordre GRB
+            led_strip_set_pixel(s_strip, i, g, r, b);   // swap R/G for GRB order
         }
         for (int li = 0; li < s_layer_count; li++) {
             if (s_layers[li].enabled && s_layers[li].pattern != PAT_SOLID) {
@@ -267,10 +267,10 @@ esp_err_t strip_control_init(void)
         .flags.invert_out = false,
     };
     led_strip_rmt_config_t rmt_config = {
-        .clk_src = RMT_CLK_SRC_APB,  // RMT_CLK_SRC_APB au lieu de RMT_CLK_SRC_DEFAULT
+        .clk_src = RMT_CLK_SRC_APB,  // RMT_CLK_SRC_APB instead of RMT_CLK_SRC_DEFAULT
         .resolution_hz = 10 * 1000 * 1000,
-        .mem_block_symbols = 128,   // buffer mémoire RMT plus généreux
-        .flags.with_dma = true,    // ESP32-S3 supporte le RMT+GDMA — décharge le CPU/les interruptions
+        .mem_block_symbols = 128,   // larger RMT memory buffer
+        .flags.with_dma = true,    // the ESP32-S3 supports RMT+GDMA: offloads the CPU/interrupts
     };
     esp_err_t ret = led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip);
     if (ret != ESP_OK) {
