@@ -2,16 +2,22 @@
 //
 // UART -> MQTT bridge for the NILM board (Teensy 4.0 -> XIAO ESP32-S3).
 // Reuses the existing enrolment/mTLS/MQTT infrastructure as it is
-// (enrollment.c, mqtt_app.c, nvs_manager.c); this module ONLY:
-//   1. Reads continuously the binary frames sent by the Teensy over UART
-//      (protocol defined on the Teensy side in send_frame(), teensy_nilm_phase2_*.ino)
-//   2. Parses them and keeps them in cache (last known value)
-//   3. Exposes an MQTT publish function following exactly the same
-//      convention as sensors_publish() (flat JSON, topic iot/%s/sensors)
+// (homepi_identity, mqtt_app.c, nvs_manager.c); this module ONLY:
+//   1. Reads the binary frames sent by the Teensy over UART, one per mains
+//      cycle (protocol: build_frame_v3() in teensy_nilm_phase2_v3_0.ino)
+//   2. ACCUMULATES every valid cycle between two publishes
+//   3. Publishes the window means on iot/<device_id>/nilm
 //
-// This device provisions itself as a device in its own right (its own
-// device_id, son propre enrollment zero-touch) via provision_device.sh /
-// flash_device.sh existants — aucune modification de ces scripts requise.
+// Frame v3 carries RAW NORMALISED values (ADC full-scale units). No scale,
+// polarity or phase is applied on the Teensy or here: the Pi calibrates
+// (nilm_calibration.json, applied by the homepi-nilm-calibrate processor).
+// The published field names end in _n so raw values can never be mistaken
+// for the calibrated fields of firmware v2.x (V_rms, P_L1, ...).
+//
+// Why accumulate: the Teensy sends ~60 frames/s and the bridge publishes
+// every 1.5 s. v2.x published the LAST frame only, so one random cycle out
+// of ~90 stood for the whole window. The window mean of P_n and Q_n is
+// exactly the mean power of the window, which is what energy needs.
 #pragma once
 
 #include "esp_err.h"
@@ -19,74 +25,78 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// ── Teensy frame format (see send_frame() in the NILM firmware) ──
-// Header : 0xAA 0x55 0x01 <len>
-// Payload (62 bytes, little-endian, as written by the Teensy):
-//   float    V_rms
-//   float    I1_rms
-//   float    I2_rms
-//   float    P_L1
-//   float    P_L2
-//   float    PF_L1
-//   float    THD
-//   float    H3
-//   float    H5
-//   float    H7
-//   float    H9
-//   int8_t   event_flag
-//   float    delta_P
-//   uint32_t ts              (millis() on the Teensy: local clock, NOT wall clock)
-//   float    lag_confirmed   (v2.2: lag value actually used for
-//                             the feature computations, validated by consensus)
-//   float    last_prominence (v2.2: sharpness of the last correlation peak
-//                             tried, accepted or not; diagnostics)
-//   uint8_t  consensus_count (v2.2: 0-3, filling of the consensus window
-//                             when the frame is sent)
-// Followed by a CRC8 (poly 0x31, init 0xFF, identical to the crc8() function
-// of the Teensy firmware; never let the two sides diverge).
-// IMPORTANT: this format MUST stay in sync with send_frame() on the
-// Teensy side; any change to one without the other silently invalidates
-// every frame (rejected as "unexpected length").
+// ── Teensy frame v3 (see build_frame_v3() in the Teensy firmware) ──
+// Header: 0xAA 0x55 0x03 <len=63>, payload little-endian, then CRC8
+// (poly 0x31, init 0xFF, identical to crc8() on the Teensy).
+//  off  type  field
+//   0   u8    fw_major
+//   1   u8    fw_minor
+//   2   f32   V_n
+//   6   f32   I1_n
+//  10   f32   I2_n
+//  14   f32   P1_n
+//  18   f32   Q1_n
+//  22   f32   P2_n
+//  26   f32   Q2_n
+//  30   f32   THD    (% of I1)
+//  34   f32   H3     (/H1, I1)
+//  38   f32   H5
+//  42   f32   H7
+//  46   f32   H9
+//  50   i8    event_flag (+1 on, -1 off, 0)
+//  51   f32   dS_n
+//  55   u32   ts (Teensy millis, local clock)
+//  59   u16   n_samples (f = 44100 / n)
+//  61   u16   glitch_count
+// IMPORTANT: this layout MUST stay in sync with build_frame_v3(). The frame
+// type byte changed from 0x01 to 0x03 so that a v2 bridge rejects v3 frames
+// and this bridge rejects v2 frames, instead of misreading them.
+#define NILM_FRAME_TYPE         0x03
 #define NILM_FRAME_HEADER_LEN   4
-#define NILM_FRAME_PAYLOAD_LEN  62
+#define NILM_FRAME_PAYLOAD_LEN  63
 #define NILM_FRAME_CRC_LEN      1
-#define NILM_FRAME_TOTAL_LEN    (NILM_FRAME_HEADER_LEN + NILM_FRAME_PAYLOAD_LEN + NILM_FRAME_CRC_LEN)
 
 typedef struct {
-    float    V_rms, I1_rms, I2_rms;
-    float    P_L1, P_L2, PF_L1;
+    uint8_t  fw_major, fw_minor;
+    float    V_n, I1_n, I2_n;
+    float    P1_n, Q1_n, P2_n, Q2_n;
     float    THD, H3, H5, H7, H9;
     int8_t   event_flag;
-    float    delta_P;
-    uint32_t teensy_ts_ms;   // local Teensy clock, not the ESP32 wall clock
-    float    lag_confirmed;    // v2.2
-    float    last_prominence;  // v2.2
-    uint8_t  consensus_count;  // v2.2 — 0-3
-    bool     valid;          // false until a valid frame has been received
-    uint32_t frames_ok;      // compteur diagnostic
-    uint32_t frames_crc_err; // compteur diagnostic
-} nilm_reading_t;
+    float    dS_n;
+    uint32_t teensy_ts_ms;
+    uint16_t n_samples;
+    uint16_t glitch_count;
+} nilm_frame_t;
 
-// Initialises the UART (RX from Teensy Serial1 TX) and starts the
-// read/parse task in the background. Call once at boot, like
-// sensors_init(); independent of the Wi-Fi/enrolment/MQTT state.
+// Window aggregate published to MQTT
+typedef struct {
+    uint32_t cycles;              // valid frames in the window
+    uint8_t  fw_major, fw_minor;  // Teensy firmware of the last frame
+    float    V_n, I1_n, I2_n;     // RMS over the window (sqrt of mean square)
+    float    P1_n, Q1_n, P2_n, Q2_n;   // window means
+    float    THD, H3, H5, H7, H9;      // window means
+    float    f_hz;                // mains frequency from the mean cycle length
+    int8_t   event_flag;          // last non-zero flag in the window
+    float    dS_n;                // dS of that event (largest |dS| if several)
+    uint32_t events;              // events in the window
+    uint32_t glitches;            // despiked samples in the window
+    uint32_t teensy_ts_ms;        // of the last frame
+    uint32_t frames_ok;           // since boot
+    uint32_t frames_crc_err;      // since boot
+    uint32_t frames_bad_len;      // since boot (wrong type or length: v2 Teensy?)
+} nilm_window_t;
+
+// Initialises the UART (RX from Teensy Serial1 TX) and starts the read/parse
+// task. Call once at boot; independent of the Wi-Fi/enrolment/MQTT state.
 esp_err_t nilm_bridge_init(void);
 
-// Copies the last valid reading into *out. Returns ESP_ERR_INVALID_STATE
-// if no frame has been received since boot.
-esp_err_t nilm_bridge_get_latest(nilm_reading_t *out);
-
-// Publishes the last reading on the device's MQTT sensors topic, with
-// exactly the same flat JSON convention as sensors_publish() (see
-// sensors.c). Call from the main loop, like
-// mqtt_app_publish_sensors().
-esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
-                               const char *device_id,
-                               const char *topic_sensors);
-
-// true if a load event (event_flag != 0) is present in the
-// last frame received: lets the main loop trigger an
-// immediate publish rather than wait for the next periodic tick
-// (a load event must not wait up to 30 s to appear
-// on the dashboard).
+// true if at least one load event arrived since the last publish: the main
+// loop publishes immediately on the rising edge instead of waiting.
 bool nilm_bridge_has_pending_event(void);
+
+// Publishes the window aggregate on topic_nilm and starts a new window.
+// Returns ESP_ERR_INVALID_STATE when no frame arrived in the window
+// (nothing is published: a gap must stay a gap on the Pi).
+esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
+                              const char *device_id,
+                              const char *topic_nilm);
