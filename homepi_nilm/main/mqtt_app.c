@@ -169,6 +169,8 @@ static void dispatch_command(const char *data, int len)
         handle_ota(cmd);
     } else if (strcmp(type, "teensy_ota") == 0) {
         handle_teensy_ota(cmd);
+    } else if (strcmp(type, "teensy_reboot") == 0) {
+        teensy_ota_handle_reboot();
     } else if (strcmp(type, "renew_cert") == 0) {
         handle_renew_cert();
     } else if (strcmp(type, "update_wifi") == 0) {

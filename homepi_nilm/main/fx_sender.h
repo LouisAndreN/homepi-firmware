@@ -98,6 +98,7 @@ static inline int fxs_end(fxs_t *s)
 static inline int fxs_commit(fxs_t *s) { return fxs_transact(s, FXP_COMMIT, NULL, 0, FXS_TIMEOUT_MS, NULL); }
 static inline int fxs_abort(fxs_t *s)  { return fxs_transact(s, FXP_ABORT, NULL, 0, FXS_TIMEOUT_MS, NULL); }
 static inline int fxs_ping(fxs_t *s, uint32_t *fw) { return fxs_transact(s, FXP_PING, NULL, 0, FXS_TIMEOUT_MS, fw); }
+static inline int fxs_reboot(fxs_t *s, uint32_t *fw) { return fxs_transact(s, FXP_REBOOT, NULL, 0, FXS_TIMEOUT_MS, fw); }
 
 static inline const char *fxs_status_name(int st)
 {

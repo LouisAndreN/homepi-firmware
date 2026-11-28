@@ -24,5 +24,11 @@
 // then queues the command for the main task. Publishes received or failed.
 void teensy_ota_handle_command(const char *url, const char *manifest, const char *signature);
 
-// Main task: runs a queued update (10-30 s; MQTT stays connected). No-op when nothing is queued.
+// Main task: runs a queued update (10-30 s; MQTT stays connected) or a queued restart. No-op otherwise.
 void teensy_ota_run_pending(void);
+
+// MQTT task (v2.6.0): {"type":"teensy_reboot"} from the Pi (dashboard / API). Queued for the main task,
+// which sends the REBOOT packet (Teensy 3.3+) and waits for the data to come back. Reports
+// teensy_reboot_done {previous_uptime_s, down_ms} or teensy_reboot_failed {reason}, and the gap as a
+// teensy_update event (phase start/end, ref "reboot").
+void teensy_ota_handle_reboot(void);

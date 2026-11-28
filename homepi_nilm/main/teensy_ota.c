@@ -31,6 +31,7 @@ static struct {
     hota_manifest_t m;
 } s_req;
 static bool s_pending;
+static bool s_reboot_pending;
 
 static void publish_failure(const char *reason, const char *detail, const char *version, const char *running)
 {
@@ -178,8 +179,54 @@ out:
     return why;
 }
 
+void teensy_ota_handle_reboot(void)
+{
+    if (__atomic_load_n(&s_pending, __ATOMIC_ACQUIRE)) { publish_failure("teensy_ota_in_progress", "reboot refused", NULL, NULL); return; }
+    __atomic_store_n(&s_reboot_pending, true, __ATOMIC_RELEASE);
+    ESP_LOGI(TAG, "Teensy restart queued for the main task");
+}
+
+static void run_reboot(void)
+{
+    static fxs_t s;
+    memset(&s, 0, sizeof(s));
+    s.io = (fxs_io_t){ io_send, io_wait, NULL };
+    nilm_bridge_flush_replies();
+    uint8_t a, b; uint32_t age = UINT32_MAX;
+    nilm_bridge_teensy_fw(&a, &b, &age);
+    char json[200];
+    mqtt_app_publish_event("teensy_update", "start", "reboot", "restart requested");
+    uint32_t fw = 0;
+    int r = fxs_reboot(&s, &fw);
+    if (r != 0) {
+        mqtt_app_publish_event("teensy_update", "end", "reboot", "failed: no reply (Teensy 3.3+ needed)");
+        snprintf(json, sizeof(json), "{\"type\":\"teensy_reboot_failed\",\"reason\":\"%s\",\"ts\":%lld}",
+                 fxs_status_name(r), (long long)time(NULL));
+        mqtt_app_publish_status(json);
+        return;
+    }
+    // Data frames come back after the restart (boot + ADC clock restart, ~1 s)
+    TickType_t t0 = xTaskGetTickCount();
+    bool back = false;
+    while (pdTICKS_TO_MS(xTaskGetTickCount() - t0) < TOTA_BOOT_WAIT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        if (nilm_bridge_teensy_fw(&a, &b, &age) && age < 500 && pdTICKS_TO_MS(xTaskGetTickCount() - t0) > age + 500) { back = true; break; }
+    }
+    uint32_t down = (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount() - t0);
+    mqtt_app_publish_event("teensy_update", "end", "reboot", back ? "data back" : "failed: no data after the restart");
+    if (back)
+        snprintf(json, sizeof(json), "{\"type\":\"teensy_reboot_done\",\"version\":\"v%u.%u.0\",\"down_ms\":%lu,\"ts\":%lld}",
+                 (unsigned)(fw >> 8), (unsigned)(fw & 0xFF), (unsigned long)down, (long long)time(NULL));
+    else
+        snprintf(json, sizeof(json), "{\"type\":\"teensy_reboot_failed\",\"reason\":\"no_data_after_restart\",\"ts\":%lld}",
+                 (long long)time(NULL));
+    mqtt_app_publish_status(json);
+    ESP_LOGI(TAG, "Teensy restart: %s in %lu ms", back ? "data back" : "no data", (unsigned long)down);
+}
+
 void teensy_ota_run_pending(void)
 {
+    if (__atomic_exchange_n(&s_reboot_pending, false, __ATOMIC_ACQ_REL)) run_reboot();
     if (!__atomic_load_n(&s_pending, __ATOMIC_ACQUIRE)) return;
     hota_manifest_t m = s_req.m;
     char url[256];

@@ -39,6 +39,7 @@
 #define FXP_COMMIT  0x13   // -
 #define FXP_ABORT   0x14   // -
 #define FXP_PING    0x15   // -
+#define FXP_REBOOT  0x16   // - (v3.3: restart the Teensy, e.g. after a bad start of the ADCs; any update in progress is aborted)
 
 // Reply frame (Teensy -> bridge), in the AA 55 stream
 #define FXP_REPLY_TYPE  0x04
@@ -113,7 +114,7 @@ static inline int fxp_feed(fxp_parser_t *p, uint8_t b)
         p->hdr[p->pos++] = b;
         if (p->pos < 5) return 0;
         p->type = p->hdr[0]; p->seq = fxp_get16(p->hdr + 1); p->len = fxp_get16(p->hdr + 3);
-        if (p->len > FXP_MAX_PAYLOAD || p->type < FXP_BEGIN || p->type > FXP_PING) { p->state = (b == FXP_SYNC0) ? 1 : 0; return 0; }
+        if (p->len > FXP_MAX_PAYLOAD || p->type < FXP_BEGIN || p->type > FXP_REBOOT) { p->state = (b == FXP_SYNC0) ? 1 : 0; return 0; }
         p->pos = 0; p->state = 3;
         return 0;
     default:

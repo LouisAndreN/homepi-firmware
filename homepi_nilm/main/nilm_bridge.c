@@ -70,12 +70,15 @@ static bool              s_seen_frame;
 // Replies of the Teensy to remote-update packets (frame type 0x04), read by teensy_ota.c
 static QueueHandle_t     s_replies = NULL;
 
-// Health frame of the Teensy (type 0x05, firmware 3.2+, once per second): counters since its boot
+// Health frame of the Teensy (type 0x05, once per second): counters since its boot. 22 bytes from
+// firmware 3.2, 24 from 3.3 (+ flags: bit0 CT1 fault signature, bit1 gave up restarting; + self-restarts)
 #define NILM_FRAME_TYPE_HEALTH 0x05
-#define NILM_HEALTH_LEN        22
+#define NILM_HEALTH_LEN_V32    22
+#define NILM_HEALTH_LEN        24
 static struct {
-    bool     seen;
+    bool     seen, has_flags;
     uint32_t overruns, resyncs, usb_skipped, cycles_dropped, uptime_s;
+    uint8_t  flags, self_restarts;
 } s_health;
 
 static void parse_frame(const uint8_t *p, nilm_frame_t *f)
@@ -143,7 +146,7 @@ static void uart_rx_task(void *arg)
                 if (byte == NILM_FRAME_TYPE || byte == FXP_REPLY_TYPE || byte == NILM_FRAME_TYPE_HEALTH) {
                     type = byte;
                     want = (byte == NILM_FRAME_TYPE) ? NILM_FRAME_PAYLOAD_LEN
-                         : (byte == FXP_REPLY_TYPE) ? FXP_REPLY_LEN : NILM_HEALTH_LEN;
+                         : (byte == FXP_REPLY_TYPE) ? FXP_REPLY_LEN : NILM_HEALTH_LEN;   // or 22, see WAIT_LEN
                     state = WAIT_LEN;
                 } else {
                     if (byte == 0x01) {   // v2 Teensy firmware still flashed
@@ -153,6 +156,7 @@ static void uart_rx_task(void *arg)
                 }
                 break;
             case WAIT_LEN:
+                if (type == NILM_FRAME_TYPE_HEALTH && byte == NILM_HEALTH_LEN_V32) want = NILM_HEALTH_LEN_V32;
                 if (byte != want) {
                     xSemaphoreTake(s_mutex, portMAX_DELAY); s_frames_bad_len++; xSemaphoreGive(s_mutex);
                     state = WAIT_AA;
@@ -177,6 +181,9 @@ static void uart_rx_task(void *arg)
                         s_health.usb_skipped    = fxp_get32(buf + 10);
                         s_health.cycles_dropped = fxp_get32(buf + 14);
                         s_health.uptime_s       = fxp_get32(buf + 18);
+                        s_health.has_flags      = (want == NILM_HEALTH_LEN);
+                        s_health.flags          = s_health.has_flags ? buf[22] : 0;
+                        s_health.self_restarts  = s_health.has_flags ? buf[23] : 0;
                         xSemaphoreGive(s_mutex);
                     }
                 } else {
@@ -300,6 +307,11 @@ esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
         cJSON_AddNumberToObject(j, "teensy_usb_skipped", (double)h.usb_skipped);
         cJSON_AddNumberToObject(j, "teensy_cycles_dropped", (double)h.cycles_dropped);
         cJSON_AddNumberToObject(j, "teensy_uptime_s", (double)h.uptime_s);
+        if (h.has_flags) {
+            cJSON_AddNumberToObject(j, "teensy_ct1_fault", (h.flags & 1) ? 1 : 0);
+            cJSON_AddNumberToObject(j, "teensy_gave_up", (h.flags & 2) ? 1 : 0);
+            cJSON_AddNumberToObject(j, "teensy_self_restarts", h.self_restarts);
+        }
     }
 
     wifi_ap_record_t ap;
