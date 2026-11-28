@@ -23,11 +23,12 @@ static const char *TAG = "nilm_bridge";
 #define NILM_UART_PORT      UART_NUM_1
 #define NILM_UART_BAUD      921600
 #define NILM_UART_RX_PIN    44
-// v2.6.0: TX to the Teensy (Serial1 RX, pin 0) for the remote update, on the wire that already
-// existed (GPIO43, series resistor). GPIO43 is UART0 TX by default: the console moved to other pins
-// (sdkconfig: CONFIG_ESP_CONSOLE_UART_CUSTOM, TX GPIO7) so the logs no longer reach the Teensy. The
-// ROM still prints its boot text on GPIO43 at every reset; the Teensy ignores it (fxproto.h).
-#define NILM_UART_TX_PIN    43
+// v2.6.0: TX to the Teensy (Serial1 RX, pin 0) for the remote update, XIAO D4 = GPIO5, series
+// resistor. Not GPIO43: it is the UART0 console TX, and the ROM prints its boot text there at every
+// reset whatever the configuration (only an eFuse stops it); the wire was moved from GPIO43 to D4 so
+// that nothing but update packets reaches the Teensy. The Teensy still ignores anything that does not
+// parse (fxproto.h).
+#define NILM_UART_TX_PIN    5
 #define NILM_UART_RX_BUF_SZ 4096                 // ~60 frames/s x 68 B: ~1 s of margin
 #define FS_HZ               44100.0f
 
