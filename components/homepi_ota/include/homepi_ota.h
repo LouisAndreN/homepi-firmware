@@ -41,6 +41,13 @@ typedef struct {
     char sha256[65];
 } hota_manifest_t;
 
+// Checks the signature and the fields of a signed manifest, nothing about this device (v2.6.0: also
+// used for the images this device relays to another chip, the Teensy of the NILM board). Fills *out
+// when not NULL; on refusal sets *reason (unsigned_command, manifest_too_long, bad_signature,
+// bad_manifest) and records nothing.
+esp_err_t hota_verify_signed(const char *manifest, const char *signature_b64, hota_manifest_t *out,
+                             const char **reason);
+
 // Checks the signed manifest against this device (signature, project, chip, newer version).
 // Fills *out when not NULL. On refusal the reason is recorded (hota_take_last_failure).
 esp_err_t hota_check_manifest(const char *manifest, const char *signature_b64, hota_manifest_t *out);

@@ -55,6 +55,7 @@
                                                  // InfluxDB "nilm_readings")
 #define MQTT_TOPIC_STATUS   "iot/%s/status"
 #define MQTT_TOPIC_COMMANDS "iot/%s/commands"
+#define MQTT_TOPIC_EVENT    "iot/%s/event"     // v2.6.0: Telegraf homepi_events
 
 // --- NVS ------------------------------------------------------
 #define NVS_NS_CONFIG       "config"

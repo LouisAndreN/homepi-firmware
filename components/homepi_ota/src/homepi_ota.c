@@ -104,24 +104,39 @@ static bool copy_field(const cJSON *obj, const char *name, char *dst, size_t len
 #define CHIP_TARGET "esp32"
 #endif
 
+esp_err_t hota_verify_signed(const char *manifest, const char *signature_b64, hota_manifest_t *out,
+                             const char **reason)
+{
+    hota_manifest_t m = {0};
+    const char *why = NULL;
+    esp_err_t err = ESP_OK;
+    if (!manifest || !signature_b64 || !manifest[0] || !signature_b64[0]) {
+        why = "unsigned_command"; err = ESP_ERR_INVALID_ARG;
+    } else if (strlen(manifest) >= HOTA_MANIFEST_MAX || strlen(signature_b64) >= HOTA_SIGNATURE_MAX) {
+        why = "manifest_too_long"; err = ESP_ERR_INVALID_SIZE;
+    } else if (!verify_signature(manifest, signature_b64)) {
+        // The signature is checked first: nothing else in the command is trusted before it
+        why = "bad_signature"; err = ESP_ERR_INVALID_CRC;
+    } else {
+        cJSON *j = cJSON_Parse(manifest);
+        bool parsed = j && copy_field(j, "project", m.project, sizeof(m.project))
+                      && copy_field(j, "chip_target", m.chip_target, sizeof(m.chip_target))
+                      && copy_field(j, "version", m.version, sizeof(m.version))
+                      && copy_field(j, "sha256", m.sha256, sizeof(m.sha256)) && strlen(m.sha256) == 64;
+        cJSON_Delete(j);
+        if (!parsed) { why = "bad_manifest"; err = ESP_ERR_INVALID_ARG; }
+    }
+    if (reason) *reason = why;
+    if (err == ESP_OK && out) *out = m;
+    return err;
+}
+
 esp_err_t hota_check_manifest(const char *manifest, const char *signature_b64, hota_manifest_t *out)
 {
     hota_manifest_t m = {0};
-    if (!manifest || !signature_b64 || !manifest[0] || !signature_b64[0])
-        return refuse(ESP_ERR_INVALID_ARG, "unsigned_command", NULL, NULL);
-    if (strlen(manifest) >= HOTA_MANIFEST_MAX || strlen(signature_b64) >= HOTA_SIGNATURE_MAX)
-        return refuse(ESP_ERR_INVALID_SIZE, "manifest_too_long", NULL, NULL);
-    // The signature is checked first: nothing else in the command is trusted before it
-    if (!verify_signature(manifest, signature_b64))
-        return refuse(ESP_ERR_INVALID_CRC, "bad_signature", NULL, NULL);
-
-    cJSON *j = cJSON_Parse(manifest);
-    bool parsed = j && copy_field(j, "project", m.project, sizeof(m.project))
-                  && copy_field(j, "chip_target", m.chip_target, sizeof(m.chip_target))
-                  && copy_field(j, "version", m.version, sizeof(m.version))
-                  && copy_field(j, "sha256", m.sha256, sizeof(m.sha256)) && strlen(m.sha256) == 64;
-    cJSON_Delete(j);
-    if (!parsed) return refuse(ESP_ERR_INVALID_ARG, "bad_manifest", NULL, NULL);
+    const char *why = NULL;
+    esp_err_t err = hota_verify_signed(manifest, signature_b64, &m, &why);
+    if (err != ESP_OK) return refuse(err, why, NULL, NULL);
 
     const esp_app_desc_t *running = esp_app_get_description();
     if (strcmp(m.project, running->project_name) != 0)

@@ -7,8 +7,12 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # ── Console ────────────────────────────────────────────────────
-# UART comme console primaire (fonctionne avec ou sans USB host)
-CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# v2.6.0: UART0 console moved off GPIO43/44, which carry the Teensy link (GPIO43 = TX to the Teensy
+# for the remote update). TX GPIO7 (D8) and RX GPIO8 (D9) are unconnected; logs stay on USB-JTAG.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_0=y
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=7
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=8
 # USB-JTAG en secondaire (idf.py monitor continue à marcher sur PC)
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
 

@@ -8,6 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "fxproto.h"
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +23,11 @@ static const char *TAG = "nilm_bridge";
 #define NILM_UART_PORT      UART_NUM_1
 #define NILM_UART_BAUD      921600
 #define NILM_UART_RX_PIN    44
-#define NILM_UART_TX_PIN    UART_PIN_NO_CHANGE   // Teensy -> ESP32 only
+// v2.6.0: TX to the Teensy (Serial1 RX, pin 0) for the remote update, on the wire that already
+// existed (GPIO43, series resistor). GPIO43 is UART0 TX by default: the console moved to other pins
+// (sdkconfig: CONFIG_ESP_CONSOLE_UART_CUSTOM, TX GPIO7) so the logs no longer reach the Teensy. The
+// ROM still prints its boot text on GPIO43 at every reset; the Teensy ignores it (fxproto.h).
+#define NILM_UART_TX_PIN    43
 #define NILM_UART_RX_BUF_SZ 4096                 // ~60 frames/s x 68 B: ~1 s of margin
 #define FS_HZ               44100.0f
 
@@ -54,6 +60,14 @@ typedef struct {
 static accum_t           s_acc;
 static uint32_t          s_frames_ok, s_frames_crc_err, s_frames_bad_len;
 static SemaphoreHandle_t s_mutex = NULL;
+
+// Teensy firmware of the last data frame, and when it arrived (remote update: before / after)
+static uint8_t           s_fw_major, s_fw_minor;
+static TickType_t        s_last_frame_tick;
+static bool              s_seen_frame;
+
+// Replies of the Teensy to remote-update packets (frame type 0x04), read by teensy_ota.c
+static QueueHandle_t     s_replies = NULL;
 
 static void parse_frame(const uint8_t *p, nilm_frame_t *f)
 {
@@ -95,6 +109,8 @@ static void accumulate(const nilm_frame_t *f)
     a->fw_major = f->fw_major; a->fw_minor = f->fw_minor;
     a->teensy_ts_ms = f->teensy_ts_ms;
     s_frames_ok++;
+    s_fw_major = f->fw_major; s_fw_minor = f->fw_minor;
+    s_last_frame_tick = xTaskGetTickCount(); s_seen_frame = true;
     xSemaphoreGive(s_mutex);
 }
 
@@ -104,6 +120,7 @@ static void uart_rx_task(void *arg)
     (void)arg;
     enum { WAIT_AA, WAIT_55, WAIT_TYPE, WAIT_LEN, READ_PAYLOAD, READ_CRC } state = WAIT_AA;
     uint8_t buf[NILM_FRAME_PAYLOAD_LEN];
+    uint8_t type = 0, want = 0;     // type 0x03 (data, 63 B) or 0x04 (update reply, 8 B)
     int pos = 0;
     uint8_t byte;
     nilm_frame_t f;
@@ -114,8 +131,11 @@ static void uart_rx_task(void *arg)
             case WAIT_AA:   if (byte == 0xAA) state = WAIT_55; break;
             case WAIT_55:   state = (byte == 0x55) ? WAIT_TYPE : WAIT_AA; break;
             case WAIT_TYPE:
-                if (byte == NILM_FRAME_TYPE) state = WAIT_LEN;
-                else {
+                if (byte == NILM_FRAME_TYPE || byte == FXP_REPLY_TYPE) {
+                    type = byte;
+                    want = (byte == NILM_FRAME_TYPE) ? NILM_FRAME_PAYLOAD_LEN : FXP_REPLY_LEN;
+                    state = WAIT_LEN;
+                } else {
                     if (byte == 0x01) {   // v2 Teensy firmware still flashed
                         xSemaphoreTake(s_mutex, portMAX_DELAY); s_frames_bad_len++; xSemaphoreGive(s_mutex);
                     }
@@ -123,19 +143,23 @@ static void uart_rx_task(void *arg)
                 }
                 break;
             case WAIT_LEN:
-                if (byte != NILM_FRAME_PAYLOAD_LEN) {
+                if (byte != want) {
                     xSemaphoreTake(s_mutex, portMAX_DELAY); s_frames_bad_len++; xSemaphoreGive(s_mutex);
                     state = WAIT_AA;
                 } else { pos = 0; state = READ_PAYLOAD; }
                 break;
             case READ_PAYLOAD:
                 buf[pos++] = byte;
-                if (pos >= NILM_FRAME_PAYLOAD_LEN) state = READ_CRC;
+                if (pos >= want) state = READ_CRC;
                 break;
             case READ_CRC:
-                if (byte == crc8(buf, NILM_FRAME_PAYLOAD_LEN)) {
-                    parse_frame(buf, &f);
-                    accumulate(&f);
+                if (byte == crc8(buf, want)) {
+                    if (type == NILM_FRAME_TYPE) {
+                        parse_frame(buf, &f);
+                        accumulate(&f);
+                    } else {
+                        xQueueSend(s_replies, buf, 0);   // full queue: the sender times out and retries
+                    }
                 } else {
                     xSemaphoreTake(s_mutex, portMAX_DELAY); s_frames_crc_err++; xSemaphoreGive(s_mutex);
                 }
@@ -148,7 +172,8 @@ static void uart_rx_task(void *arg)
 esp_err_t nilm_bridge_init(void)
 {
     s_mutex = xSemaphoreCreateMutex();
-    if (!s_mutex) return ESP_ERR_NO_MEM;
+    s_replies = xQueueCreate(8, FXP_REPLY_LEN);
+    if (!s_mutex || !s_replies) return ESP_ERR_NO_MEM;
     memset(&s_acc, 0, sizeof(s_acc));
 
     uart_config_t cfg = {
@@ -166,8 +191,8 @@ esp_err_t nilm_bridge_init(void)
                             UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return ret;
     if (xTaskCreate(uart_rx_task, "nilm_uart_rx", 4096, NULL, 6, NULL) != pdPASS) return ESP_ERR_NO_MEM;
 
-    ESP_LOGI(TAG, "NILM bridge v3 (raw frames, window means) on UART%d %d baud rx=%d",
-             NILM_UART_PORT, NILM_UART_BAUD, NILM_UART_RX_PIN);
+    ESP_LOGI(TAG, "NILM bridge v3 (raw frames, window means) on UART%d %d baud rx=%d tx=%d",
+             NILM_UART_PORT, NILM_UART_BAUD, NILM_UART_RX_PIN, NILM_UART_TX_PIN);
     return ESP_OK;
 }
 
@@ -261,4 +286,45 @@ esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
     free(s);
     cJSON_Delete(j);
     return (msg_id >= 0) ? ESP_OK : ESP_FAIL;
+}
+
+// ── Remote update of the Teensy (v2.6.0) ───────────────────────
+
+esp_err_t nilm_bridge_write(const uint8_t *data, size_t len)
+{
+    int n = uart_write_bytes(NILM_UART_PORT, (const char *)data, len);
+    if (n != (int)len) return ESP_FAIL;
+    return uart_wait_tx_done(NILM_UART_PORT, pdMS_TO_TICKS(200));
+}
+
+void nilm_bridge_flush_replies(void)
+{
+    uint8_t r[FXP_REPLY_LEN];
+    while (xQueueReceive(s_replies, r, 0) == pdTRUE) { }
+}
+
+bool nilm_bridge_wait_reply(uint16_t seq, uint8_t cmd, uint32_t timeout_ms, uint8_t *status, uint32_t *value)
+{
+    TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    uint8_t r[FXP_REPLY_LEN];
+    for (;;) {
+        TickType_t now = xTaskGetTickCount();
+        if ((int32_t)(end - now) <= 0) return false;
+        if (xQueueReceive(s_replies, r, end - now) != pdTRUE) return false;
+        // A late reply to an earlier attempt is skipped: only (seq, cmd) of this packet counts
+        if (fxp_get16(r) != seq || r[2] != cmd) continue;
+        *status = r[3];
+        *value  = fxp_get32(r + 4);
+        return true;
+    }
+}
+
+bool nilm_bridge_teensy_fw(uint8_t *major, uint8_t *minor, uint32_t *age_ms)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    bool seen = s_seen_frame;
+    *major = s_fw_major; *minor = s_fw_minor;
+    *age_ms = seen ? (uint32_t)pdTICKS_TO_MS(xTaskGetTickCount() - s_last_frame_tick) : UINT32_MAX;
+    xSemaphoreGive(s_mutex);
+    return seen;
 }

@@ -16,6 +16,7 @@
 #include "homepi_identity.h"
 #include "esp_timer.h"
 #include "mqtt_app.h"
+#include "teensy_ota.h"
 #include "nilm_bridge.h"      // NILM : remplace "sensors.h"
 #include "config.h"
 #include "esp_wifi.h"
@@ -193,6 +194,8 @@ static void homepi_main_task(void *arg)
     while (1) {
         // A queued OTA command runs here, on the main task (v2.4.2)
         mqtt_app_run_pending_ota();
+        // A queued remote update of the Teensy runs here too (v2.6.0), MQTT stays connected
+        teensy_ota_run_pending();
         TickType_t now = xTaskGetTickCount();
         bool has_event = nilm_bridge_has_pending_event();
 

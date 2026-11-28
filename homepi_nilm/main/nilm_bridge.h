@@ -100,3 +100,13 @@ bool nilm_bridge_has_pending_event(void);
 esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
                               const char *device_id,
                               const char *topic_nilm);
+
+// ── Remote update of the Teensy (v2.6.0, see teensy_ota.c and fxproto.h) ──
+// Writes bytes to the Teensy (Serial1 RX) and waits until they left the UART.
+esp_err_t nilm_bridge_write(const uint8_t *data, size_t len);
+// Waits for the Teensy's reply (frame type 0x04) to the packet (seq, cmd); false on timeout.
+bool nilm_bridge_wait_reply(uint16_t seq, uint8_t cmd, uint32_t timeout_ms, uint8_t *status, uint32_t *value);
+// Drops replies left from an earlier update.
+void nilm_bridge_flush_replies(void);
+// Teensy firmware of the last data frame and its age; false if no frame since boot.
+bool nilm_bridge_teensy_fw(uint8_t *major, uint8_t *minor, uint32_t *age_ms);

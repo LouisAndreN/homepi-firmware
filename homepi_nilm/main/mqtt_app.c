@@ -9,6 +9,7 @@
 #include "nilm_bridge.h"   // NILM: replaces "sensors.h"; this device has
                            // no I2C sensors, only the Teensy bridge
 #include "homepi_ota.h"
+#include "teensy_ota.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -26,6 +27,7 @@ static char s_topic_nilm[128]      = {0}; // NILM: dedicated topic, NOT iot/.../
                                            // (see MQTT_TOPIC_NILM in config.h)
 static char s_topic_status[128]   = {0};
 static char s_topic_commands[128] = {0};
+static char s_topic_event[128]    = {0};   // v2.6.0: interruptions of the NILM data (teensy_update)
 
 
 // ── MQTT command handlers ───────────────────────────────────
@@ -76,6 +78,33 @@ void mqtt_app_run_pending_ota(void)
     hota_run_request();                     // restarts on success
     ESP_LOGE(TAG, "OTA failed: restarting MQTT (the reason is published once connected)");
     esp_mqtt_client_start(mqtt_handle);
+}
+
+// v2.6.0: remote update of the Teensy (teensy_ota.c). Checked here, run by the main task.
+static void handle_teensy_ota(cJSON *cmd)
+{
+    teensy_ota_handle_command(cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "url")),
+                              cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "manifest")),
+                              cJSON_GetStringValue(cJSON_GetObjectItem(cmd, "signature")));
+}
+
+void mqtt_app_publish_status(const char *json)
+{
+    if (mqtt_handle && json) esp_mqtt_client_publish(mqtt_handle, s_topic_status, json, 0, 1, 0);
+}
+
+void mqtt_app_publish_event(const char *kind, const char *phase, const char *ref, const char *detail)
+{
+    if (!mqtt_handle) return;
+    cJSON *e = cJSON_CreateObject();
+    cJSON_AddStringToObject(e, "kind", kind);
+    cJSON_AddStringToObject(e, "phase", phase);
+    cJSON_AddStringToObject(e, "ref", ref ? ref : "");
+    cJSON_AddStringToObject(e, "detail", detail ? detail : "");
+    cJSON_AddNumberToObject(e, "ts", (double)time(NULL));
+    char *js = cJSON_PrintUnformatted(e);
+    if (js) { esp_mqtt_client_publish(mqtt_handle, s_topic_event, js, 0, 1, 0); free(js); }
+    cJSON_Delete(e);
 }
 
 static void handle_renew_cert(void)
@@ -138,6 +167,8 @@ static void dispatch_command(const char *data, int len)
 
     if (strcmp(type, "ota") == 0) {
         handle_ota(cmd);
+    } else if (strcmp(type, "teensy_ota") == 0) {
+        handle_teensy_ota(cmd);
     } else if (strcmp(type, "renew_cert") == 0) {
         handle_renew_cert();
     } else if (strcmp(type, "update_wifi") == 0) {
@@ -275,6 +306,8 @@ esp_err_t mqtt_app_start(void)
              MQTT_TOPIC_STATUS,   s_device_id);
     snprintf(s_topic_commands, sizeof(s_topic_commands),
              MQTT_TOPIC_COMMANDS, s_device_id);
+    snprintf(s_topic_event,    sizeof(s_topic_event),
+             MQTT_TOPIC_EVENT,    s_device_id);
 
     // LWT: published automatically by the broker on an abrupt disconnection
     cJSON *lwt_json = cJSON_CreateObject();

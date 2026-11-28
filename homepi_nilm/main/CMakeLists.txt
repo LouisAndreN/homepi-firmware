@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "mqtt_app.c"
         "nilm_bridge.c"
+        "teensy_ota.c"
     INCLUDE_DIRS "."
     REQUIRES
         nvs_flash
