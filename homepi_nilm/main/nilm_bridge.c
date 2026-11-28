@@ -70,6 +70,14 @@ static bool              s_seen_frame;
 // Replies of the Teensy to remote-update packets (frame type 0x04), read by teensy_ota.c
 static QueueHandle_t     s_replies = NULL;
 
+// Health frame of the Teensy (type 0x05, firmware 3.2+, once per second): counters since its boot
+#define NILM_FRAME_TYPE_HEALTH 0x05
+#define NILM_HEALTH_LEN        22
+static struct {
+    bool     seen;
+    uint32_t overruns, resyncs, usb_skipped, cycles_dropped, uptime_s;
+} s_health;
+
 static void parse_frame(const uint8_t *p, nilm_frame_t *f)
 {
     int i = 0;
@@ -132,9 +140,10 @@ static void uart_rx_task(void *arg)
             case WAIT_AA:   if (byte == 0xAA) state = WAIT_55; break;
             case WAIT_55:   state = (byte == 0x55) ? WAIT_TYPE : WAIT_AA; break;
             case WAIT_TYPE:
-                if (byte == NILM_FRAME_TYPE || byte == FXP_REPLY_TYPE) {
+                if (byte == NILM_FRAME_TYPE || byte == FXP_REPLY_TYPE || byte == NILM_FRAME_TYPE_HEALTH) {
                     type = byte;
-                    want = (byte == NILM_FRAME_TYPE) ? NILM_FRAME_PAYLOAD_LEN : FXP_REPLY_LEN;
+                    want = (byte == NILM_FRAME_TYPE) ? NILM_FRAME_PAYLOAD_LEN
+                         : (byte == FXP_REPLY_TYPE) ? FXP_REPLY_LEN : NILM_HEALTH_LEN;
                     state = WAIT_LEN;
                 } else {
                     if (byte == 0x01) {   // v2 Teensy firmware still flashed
@@ -158,8 +167,17 @@ static void uart_rx_task(void *arg)
                     if (type == NILM_FRAME_TYPE) {
                         parse_frame(buf, &f);
                         accumulate(&f);
-                    } else {
+                    } else if (type == FXP_REPLY_TYPE) {
                         xQueueSend(s_replies, buf, 0);   // full queue: the sender times out and retries
+                    } else {
+                        xSemaphoreTake(s_mutex, portMAX_DELAY);
+                        s_health.seen = true;
+                        s_health.overruns       = fxp_get32(buf + 2);
+                        s_health.resyncs        = fxp_get32(buf + 6);
+                        s_health.usb_skipped    = fxp_get32(buf + 10);
+                        s_health.cycles_dropped = fxp_get32(buf + 14);
+                        s_health.uptime_s       = fxp_get32(buf + 18);
+                        xSemaphoreGive(s_mutex);
                     }
                 } else {
                     xSemaphoreTake(s_mutex, portMAX_DELAY); s_frames_crc_err++; xSemaphoreGive(s_mutex);
@@ -271,6 +289,18 @@ esp_err_t nilm_bridge_publish(esp_mqtt_client_handle_t client,
     cJSON_AddNumberToObject(j, "frames_ok", (double)w.frames_ok);
     cJSON_AddNumberToObject(j, "frames_crc_err", (double)w.frames_crc_err);
     cJSON_AddNumberToObject(j, "frames_bad_len", (double)w.frames_bad_len);
+    // Teensy health (fw 3.2+): counters since its boot. overruns/resyncs rising = the samples of that
+    // window may be incomplete; the Pi marks such windows instead of trusting them.
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    typeof(s_health) h = s_health;
+    xSemaphoreGive(s_mutex);
+    if (h.seen) {
+        cJSON_AddNumberToObject(j, "teensy_overruns", (double)h.overruns);
+        cJSON_AddNumberToObject(j, "teensy_resyncs", (double)h.resyncs);
+        cJSON_AddNumberToObject(j, "teensy_usb_skipped", (double)h.usb_skipped);
+        cJSON_AddNumberToObject(j, "teensy_cycles_dropped", (double)h.cycles_dropped);
+        cJSON_AddNumberToObject(j, "teensy_uptime_s", (double)h.uptime_s);
+    }
 
     wifi_ap_record_t ap;
     cJSON_AddNumberToObject(j, "rssi", (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0);
